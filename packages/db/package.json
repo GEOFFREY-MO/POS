@@ -1,0 +1,11 @@
+{
+  "name": "@offline-pos/db",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"SQL schema only; migrations to be added\"",
+    "lint": "echo \"no lint for SQL\""
+  }
+}
+

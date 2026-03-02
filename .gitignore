@@ -1,0 +1,36 @@
+node_modules
+dist
+build
+.turbo
+.DS_Store
+*.log
+/.pnpm-store
+/.vscode
+/.idea
+/.cache
+coverage
+
+# Installer outputs
+*.exe
+*.blockmap
+*.nsis
+*.AppImage
+*.dmg
+*.snap
+
+# Environment
+.env
+.env.*
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Secrets
+credentials.json
+
+# Database files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db

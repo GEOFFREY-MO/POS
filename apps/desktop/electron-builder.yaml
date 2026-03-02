@@ -1,0 +1,46 @@
+directories:
+  # Use a stable release output folder (avoid locking issues with prior build artifacts)
+  output: dist/release
+  buildResources: build
+appId: com.sella.offlinepos
+productName: SELLA – Offline POS System
+artifactName: SELLA Setup v${version}.${ext}
+copyright: Copyright © Geoffrey Mokami
+# Rebuild native modules for Electron (required for better-sqlite3)
+npmRebuild: true
+# Only rebuild better-sqlite3 to avoid pnpm virtual store issues
+buildDependenciesFromSource: false
+files:
+  # Only ship built app artifacts (NOT prior installers/build output)
+  - dist/main/**/*
+  - dist/preload/**/*
+  - dist/renderer/**/*
+  - package.json
+  - api-server.cjs
+  - "!**/*.map" # Exclude source maps
+  - "!dist/build/**/*" # Never include previous electron-builder outputs
+  - "!dist/win-unpacked/**/*" # Never include unpacked outputs
+  - "!**/*.md" # Exclude markdown files
+  - "!**/test/**/*" # Exclude test files
+  - "!**/*.test.*" # Exclude test files
+  - "!**/*.spec.*" # Exclude spec files
+extraResources:
+  - from: ../../packages/api/dist
+    to: api
+    filter:
+      - "!**/*.map" # Exclude source maps
+win:
+  target: nsis
+  sign: false
+nsis:
+  oneClick: false
+  perMachine: true
+  allowElevation: true
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SELLA Offline POS
+  # Optimize installer size
+  deleteAppDataOnUninstall: false
+electronVersion: 31.7.7
+

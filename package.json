@@ -1,0 +1,17 @@
+{
+  "name": "offline-pos",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "lint": "echo \"add linting per package\"",
+    "test": "echo \"add tests per package\""
+  },
+  "devDependencies": {
+    "@tsconfig/node10": "^1.0.12",
+    "@tsconfig/node12": "^12.1.7",
+    "@tsconfig/node14": "^14.1.8",
+    "@tsconfig/node16": "^16.1.8",
+    "electron-rebuild": "^3.2.9"
+  }
+}
