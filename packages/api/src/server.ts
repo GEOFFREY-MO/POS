@@ -1749,8 +1749,8 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     const rule = getKpiRule(db, input.branchId);
     
     // Get tax inclusion setting
-    const settingsRow = db.prepare("SELECT tax_included FROM settings WHERE id = 1").get() as { tax_included: number } | undefined;
-    const taxIncluded = settingsRow?.tax_included === 1;
+    const taxSettingsRow = db.prepare("SELECT tax_included FROM settings WHERE id = 1").get() as { tax_included: number } | undefined;
+    const taxIncluded = taxSettingsRow?.tax_included === 1;
 
     const tx = db.transaction(() => {
       let totalAmount = 0;
