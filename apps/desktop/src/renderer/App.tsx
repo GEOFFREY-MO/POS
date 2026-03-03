@@ -71,7 +71,7 @@ type Product = {
   barcode?: string | null;
   expiry_date?: number | null;
 };
-type Service = { id: string; name: string; tax_rate: number; suggested_price?: number; cost_price?: number };
+type Service = { id: string; name: string; tax_rate: number; suggested_price?: number; cost_price?: number; kpi_eligible?: number; notes?: string };
 
 // API dev server defaults to 3333; override with VITE_API_BASE if set.
 const API_BASE = (import.meta as any).env.VITE_API_BASE ?? "http://localhost:3333";
@@ -2009,8 +2009,10 @@ const ServiceManager = ({
   const [form, setForm] = useState({
     name: "",
     suggestedPrice: 0,
+    costPrice: 0,
     taxRate: 0,
     category: "",
+    notes: "",
     kpiEligible: true,
   });
   const mutation = useMutation({
@@ -2020,8 +2022,10 @@ const ServiceManager = ({
         body: JSON.stringify({
           name: form.name,
           suggestedPrice: Number(form.suggestedPrice),
+          costPrice: Number(form.costPrice),
           taxRate: Number(form.taxRate),
           category: form.category || undefined,
+          notes: form.notes || undefined,
           kpiEligible: form.kpiEligible,
         }),
       });
@@ -2029,7 +2033,7 @@ const ServiceManager = ({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["services"] });
       onSaved();
-      setForm({ name: "", suggestedPrice: 0, taxRate: 0, category: "", kpiEligible: true });
+      setForm({ name: "", suggestedPrice: 0, costPrice: 0, taxRate: 0, category: "", notes: "", kpiEligible: true });
     },
   });
 
@@ -2053,6 +2057,11 @@ const ServiceManager = ({
           onChange={(v) => setForm((p) => ({ ...p, suggestedPrice: v }))}
         />
         <NumberField
+          label={`Cost price (${currency})`}
+          value={form.costPrice}
+          onChange={(v) => setForm((p) => ({ ...p, costPrice: v }))}
+        />
+        <NumberField
           label="Tax rate (decimal)"
           value={form.taxRate}
           onChange={(v) => setForm((p) => ({ ...p, taxRate: v }))}
@@ -2061,6 +2070,11 @@ const ServiceManager = ({
           label="Category"
           value={form.category}
           onChange={(v) => setForm((p) => ({ ...p, category: v }))}
+        />
+        <TextField
+          label="Notes"
+          value={form.notes}
+          onChange={(v) => setForm((p) => ({ ...p, notes: v }))}
         />
         <label className="mt-1 flex items-center gap-2 text-xs font-medium text-[var(--muted)]">
           <input
@@ -4223,9 +4237,9 @@ const AdminInventoryPage = ({
     for (const item of bulkPreview.matched) {
       try {
         await api(`/products/${item.product.id}`, {
-          method: "PATCH",
+          method: "PUT",
           body: JSON.stringify({
-            stock_qty: item.product.stock_qty + item.addQty,
+            stockQty: item.product.stock_qty + item.addQty,
           }),
         });
         updated++;
@@ -4269,9 +4283,9 @@ const AdminInventoryPage = ({
     if (!adjustModal.product) return;
     try {
       await api(`/products/${adjustModal.product.id}`, {
-        method: "PATCH",
+        method: "PUT",
         body: JSON.stringify({
-          stock_qty: adjustModal.product.stock_qty + adjustModal.qty,
+          stockQty: adjustModal.product.stock_qty + adjustModal.qty,
         }),
       });
       qc.invalidateQueries({ queryKey: ["products"] });
@@ -4394,6 +4408,7 @@ const AdminInventoryPage = ({
                   <th className="px-3 py-2">Cost</th>
                   <th className="px-3 py-2">Stock</th>
                   <th className="px-3 py-2">Low Alert</th>
+                  <th className="px-3 py-2">Added by</th>
                   <th className="px-3 py-2">Status</th>
                   <th className="px-3 py-2">Actions</th>
                 </tr>
@@ -4414,6 +4429,7 @@ const AdminInventoryPage = ({
                         </span>
                       </td>
                       <td className="px-3 py-2 text-[var(--muted)]">{p.low_stock_alert ?? "—"}</td>
+                      <td className="px-3 py-2 text-[var(--muted)] text-xs">{(p as any).added_by ?? "—"}</td>
                       <td className="px-3 py-2">
                         {low ? (
                           <span className="inline-flex items-center rounded-full bg-red-500/20 px-2 py-0.5 text-xs font-medium text-red-400">
@@ -4874,14 +4890,24 @@ const ProductsPage = ({
   const updateProduct = async (id: string, patch: Partial<Product>) => {
     const original = products.find((p) => p.id === id);
     if (!(await requireAdminPin())) return;
+    const camelPatch: Record<string, any> = {};
+    if (patch.base_price !== undefined) camelPatch.basePrice = patch.base_price;
+    if ((patch as any).cost_price !== undefined) camelPatch.costPrice = (patch as any).cost_price;
+    if (patch.tax_rate !== undefined) camelPatch.taxRate = patch.tax_rate;
+    if (patch.stock_qty !== undefined) camelPatch.stockQty = patch.stock_qty;
+    if (patch.low_stock_alert !== undefined) camelPatch.lowStockAlert = patch.low_stock_alert;
+    if ((patch as any).expiry_date !== undefined) camelPatch.expiryDate = (patch as any).expiry_date;
+    if ((patch as any).category !== undefined) camelPatch.category = (patch as any).category;
+    if ((patch as any).name !== undefined) camelPatch.name = (patch as any).name;
+    if ((patch as any).barcode !== undefined) camelPatch.barcode = (patch as any).barcode;
     await api(`/products/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(patch),
+      method: "PUT",
+      body: JSON.stringify(camelPatch),
     });
     qc.invalidateQueries({ queryKey: ["products"] });
     if (original) {
       addAudit(
-        `Product ${original.name} updated: ${JSON.stringify(patch)}`
+        `Product ${original.name} updated: ${JSON.stringify(camelPatch)}`
       );
     }
   };
@@ -4892,8 +4918,8 @@ const ProductsPage = ({
     if (Number.isNaN(value)) return;
     const tasks = products.map((p) =>
       api(`/products/${p.id}`, {
-        method: "PATCH",
-        body: JSON.stringify({ low_stock_alert: value }),
+        method: "PUT",
+        body: JSON.stringify({ lowStockAlert: value }),
       }).catch(() => null)
     );
     await Promise.all(tasks);
@@ -5058,9 +5084,9 @@ const ProductsPage = ({
     for (const item of bulkPreview.matched) {
       try {
         await api(`/products/${item.product.id}`, {
-          method: "PATCH",
+          method: "PUT",
           body: JSON.stringify({
-            stock_qty: item.product.stock_qty + item.addQty,
+            stockQty: item.product.stock_qty + item.addQty,
           }),
         });
         updated++;
@@ -5756,6 +5782,7 @@ const ProductsPage = ({
                 <th className="px-2 py-1">Tax</th>
                 <th className="px-2 py-1">Stock</th>
                 <th className="px-2 py-1">Low alert</th>
+                <th className="px-2 py-1">Added by</th>
                 <th className="px-2 py-1">Status</th>
                 <th className="px-2 py-1">Expiry</th>
                 <th className="px-2 py-1">Save</th>
@@ -5855,6 +5882,7 @@ const ProductsPage = ({
                         className="w-20 rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-[var(--fg)]"
                       />
                     </td>
+                    <td className="px-2 py-1 text-[var(--muted)] text-xs">{(p as any).added_by ?? "—"}</td>
                     <td className="px-2 py-1 text-[var(--muted)]">
                       {low ? (
                         <span className="text-red-400 font-medium">Low</span>
@@ -5893,7 +5921,7 @@ const ProductsPage = ({
               })}
               {sorted.length === 0 && (
                 <tr>
-                  <td className="px-2 py-2 text-xs text-[var(--muted)]" colSpan={11}>
+                  <td className="px-2 py-2 text-xs text-[var(--muted)]" colSpan={12}>
                     {search ? "No products match your search." : "No products yet."}
                   </td>
                 </tr>
@@ -5963,7 +5991,7 @@ const ServicesPage = ({
                   {s.suggested_price ? `${currency} ${s.suggested_price}` : "Dynamic"}
                 </td>
                 <td className="px-2 py-1 text-[var(--muted)]">{s.tax_rate}</td>
-                <td className="px-2 py-1 text-[var(--muted)]">{(s as any).kpiEligible ? "Yes" : "No"}</td>
+                <td className="px-2 py-1 text-[var(--muted)]">{s.kpi_eligible ? "Yes" : "No"}</td>
               </tr>
             ))}
             {services.length === 0 && (
@@ -7511,6 +7539,7 @@ const AdminPage = ({
   const [sheetBusy, setSheetBusy] = useState(false);
   const [autoSync, setAutoSync] = useState<boolean>(() => localStorage.getItem("auto-sync-enabled") === "true");
   const [lowStockSound, setLowStockSound] = useState<boolean>(settings.lowStockSoundEnabled !== false);
+  const [employeeExpenses, setEmployeeExpenses] = useState<boolean>(settings.allowEmployeeExpenses ?? false);
 
   const toggleAutoSync = () => {
     const next = !autoSync;
@@ -7528,8 +7557,21 @@ const AdminPage = ({
       });
       qc.invalidateQueries({ queryKey: ["settings"] });
     } catch {
-      // Revert on error
       setLowStockSound(!next);
+    }
+  };
+
+  const toggleEmployeeExpenses = async () => {
+    const next = !employeeExpenses;
+    setEmployeeExpenses(next);
+    try {
+      await api("/settings/allow-employee-expenses", {
+        method: "POST",
+        body: JSON.stringify({ enabled: next }),
+      });
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    } catch {
+      setEmployeeExpenses(!next);
     }
   };
 
@@ -8120,6 +8162,20 @@ const AdminPage = ({
         </div>
         <p className="mt-2 text-xs text-[var(--muted)]">
           Plays a beep sound when products fall below their low-stock threshold.
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-4">
+          <label className="flex items-center gap-2 text-xs text-[var(--fg)]">
+            <input
+              type="checkbox"
+              checked={employeeExpenses}
+              onChange={toggleEmployeeExpenses}
+              className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
+            />
+            Allow employees to enter expenses
+          </label>
+        </div>
+        <p className="mt-2 text-xs text-[var(--muted)]">
+          When enabled, sellers can submit expenses for admin approval.
         </p>
       </div>
     </div>

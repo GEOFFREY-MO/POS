@@ -34,3 +34,4 @@ credentials.json
 *.sqlite-shm
 *.sqlite-wal
 *.db
+packages/api/data/
