@@ -6,8 +6,9 @@ appId: com.sella.offlinepos
 productName: SELLA – Offline POS System
 artifactName: SELLA Setup v${version}.${ext}
 copyright: Copyright © Geoffrey Mokami
-# Rebuild native modules for Electron (required for better-sqlite3)
-npmRebuild: true
+# Disabled: the 'rebuild' script already handles better-sqlite3 via electron-rebuild.
+# Keeping this true causes electron-builder to scan all deps and fail on esbuild platform packages.
+npmRebuild: false
 # Only rebuild better-sqlite3 to avoid pnpm virtual store issues
 buildDependenciesFromSource: false
 files:
