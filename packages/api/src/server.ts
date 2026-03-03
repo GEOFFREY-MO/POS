@@ -391,6 +391,16 @@ const ensureSchema = (db: Db) => {
     // ignore
   }
 
+  try {
+    const cols = db.prepare("PRAGMA table_info(services)").all() as any[];
+    const has = cols.some((c) => String(c?.name) === "kpi_eligible");
+    if (!has) {
+      db.exec("ALTER TABLE services ADD COLUMN kpi_eligible INTEGER NOT NULL DEFAULT 0");
+    }
+  } catch {
+    // ignore
+  }
+
   // Expenses table for offline accounting
   try {
     db.exec(`CREATE TABLE IF NOT EXISTS expenses (
@@ -413,24 +423,6 @@ const ensureSchema = (db: Db) => {
     // ignore
   }
 
-  // Services sales table (separate from product sales)
-  try {
-    db.exec(`CREATE TABLE IF NOT EXISTS service_sales (
-      id TEXT PRIMARY KEY,
-      sale_id TEXT NOT NULL REFERENCES sales(id),
-      service_id TEXT REFERENCES services(id),
-      service_type TEXT NOT NULL,
-      description TEXT,
-      price REAL NOT NULL,
-      quantity INTEGER NOT NULL DEFAULT 1,
-      total REAL NOT NULL,
-      cashier_id TEXT NOT NULL REFERENCES sellers(id),
-      branch_id TEXT NOT NULL REFERENCES branches(id),
-      created_at INTEGER NOT NULL
-    );`);
-  } catch {
-    // ignore
-  }
 
   // Migration: add allowEmployeeExpenses to settings
   try {
@@ -462,7 +454,7 @@ const ensureDb = (dbPath: string): Db => {
       CREATE INDEX IF NOT EXISTS idx_sales_branch ON sales(branch_id);
       CREATE INDEX IF NOT EXISTS idx_sales_seller ON sales(seller_id);
       CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id);
-      CREATE INDEX IF NOT EXISTS idx_sale_items_product ON sale_items(product_id);
+      CREATE INDEX IF NOT EXISTS idx_sale_items_item ON sale_items(item_id);
       CREATE INDEX IF NOT EXISTS idx_products_barcode ON products(barcode);
       CREATE INDEX IF NOT EXISTS idx_products_name ON products(name);
       CREATE INDEX IF NOT EXISTS idx_inventory_movements_product ON inventory_movements(product_id);
@@ -581,6 +573,7 @@ const serviceSchema = z.object({
   suggestedPrice: z.number().nullable().optional(),
   taxRate: z.number().min(0).default(0),
   notes: z.string().optional(),
+  kpiEligible: z.boolean().default(false),
 });
 
 const kpiRuleSchema = z.object({
@@ -971,8 +964,8 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
         `INSERT OR REPLACE INTO settings (
           id, business_name, logo_path, po_box, town, tel_no, cu_serial_no, cu_invoice_no,
           kra_pin, return_policy, currency, tax_rate, receipt_header, receipt_footer, backup_path,
-          auth_secret, google_sheet_url, loyalty_points_rate, loyalty_redeem_rate, created_at, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM settings WHERE id=1), ?), ?)`
+          auth_secret, google_sheet_url, loyalty_points_rate, loyalty_redeem_rate, tax_included, created_at, updated_at
+        ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE((SELECT created_at FROM settings WHERE id=1), ?), ?)`
       ).run(
         input.settings.businessName,
         input.settings.logoPath ?? null,
@@ -992,6 +985,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
         input.settings.googleSheetUrl ?? null,
         input.settings.loyaltyPointsRate ?? 0.01,
         input.settings.loyaltyRedeemRate ?? 1,
+        input.settings.taxIncluded ? 1 : 0,
         createdAt,
         createdAt
       );
@@ -1604,7 +1598,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     const id = nanoid();
     const ts = now();
     db.prepare(
-      "INSERT INTO services (id, name, category, cost_price, suggested_price, tax_rate, notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO services (id, name, category, cost_price, suggested_price, tax_rate, notes, kpi_eligible, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).run(
       id,
       input.name,
@@ -1613,6 +1607,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       input.suggestedPrice ?? null,
       input.taxRate,
       input.notes ?? null,
+      input.kpiEligible ? 1 : 0,
       ts,
       ts
     );
@@ -1648,8 +1643,9 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       .prepare("SELECT id FROM services WHERE id = ?")
       .get(params.id);
     if (!exists) throw notFound("Service not found");
+    const kpiVal = input.kpiEligible !== undefined ? (input.kpiEligible ? 1 : 0) : null;
     db.prepare(
-      "UPDATE services SET name = COALESCE(?, name), category = COALESCE(?, category), cost_price = COALESCE(?, cost_price), suggested_price = COALESCE(?, suggested_price), tax_rate = COALESCE(?, tax_rate), notes = COALESCE(?, notes), updated_at = ? WHERE id = ?"
+      "UPDATE services SET name = COALESCE(?, name), category = COALESCE(?, category), cost_price = COALESCE(?, cost_price), suggested_price = COALESCE(?, suggested_price), tax_rate = COALESCE(?, tax_rate), notes = COALESCE(?, notes), kpi_eligible = COALESCE(?, kpi_eligible), updated_at = ? WHERE id = ?"
     ).run(
       input.name ?? null,
       input.category ?? null,
@@ -1657,6 +1653,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       input.suggestedPrice ?? null,
       input.taxRate ?? null,
       input.notes ?? null,
+      kpiVal,
       now(),
       params.id
     );
@@ -2050,7 +2047,6 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
 
     if (query.format === "detailed") {
-      // Get all sale items with full details
       const sql = `
         SELECT 
           si.id as item_id,
@@ -2058,15 +2054,15 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
           s.created_at as sale_date,
           p.name as product_name,
           p.barcode,
-          si.unit_price as price_sold_at,
+          si.final_price as price_sold_at,
           si.quantity,
-          si.line_total,
+          (si.final_price * si.quantity) as line_total,
           sel.name as cashier_name,
           b.name as branch_name,
           s.payment_method
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id
-        LEFT JOIN products p ON p.id = si.product_id
+        LEFT JOIN products p ON p.id = si.item_id
         LEFT JOIN sellers sel ON sel.id = s.seller_id
         LEFT JOIN branches b ON b.id = s.branch_id
         ${where}
@@ -2115,11 +2111,11 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     const params: any[] = [];
 
     if (query.start) {
-      clauses.push("si.created_at >= ?");
+      clauses.push("s.created_at >= ?");
       params.push(query.start);
     }
     if (query.end) {
-      clauses.push("si.created_at <= ?");
+      clauses.push("s.created_at <= ?");
       params.push(query.end);
     }
     if (query.branchId) {
@@ -2129,17 +2125,15 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
 
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
 
-    // Get services from sale_items where product_id is null (services)
     const sql = `
       SELECT 
         si.id,
         s.receipt_no,
         s.created_at as sale_date,
-        si.item_name as service_type,
-        si.description,
-        si.unit_price as price,
+        si.name as service_type,
+        si.final_price as price,
         si.quantity,
-        si.line_total as total,
+        (si.final_price * si.quantity) as total,
         sel.name as cashier_name,
         b.name as branch_name
       FROM sale_items si
@@ -2147,7 +2141,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       LEFT JOIN sellers sel ON sel.id = s.seller_id
       LEFT JOIN branches b ON b.id = s.branch_id
       ${where}
-      AND si.product_id IS NULL
+      AND si.kind = 'service'
       ORDER BY s.created_at DESC
     `;
 
@@ -3273,9 +3267,9 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     }
 
     if (onlyNew && saleItemsTracker?.last_synced_at) {
-      saleItems = db.prepare("SELECT * FROM sale_items WHERE created_at > ? ORDER BY created_at ASC LIMIT 2000").all(saleItemsTracker.last_synced_at) as any[];
+      saleItems = db.prepare("SELECT si.* FROM sale_items si JOIN sales s ON si.sale_id = s.id WHERE s.created_at > ? ORDER BY s.created_at ASC LIMIT 2000").all(saleItemsTracker.last_synced_at) as any[];
     } else {
-      saleItems = db.prepare("SELECT * FROM sale_items ORDER BY created_at ASC").all() as any[];
+      saleItems = db.prepare("SELECT si.* FROM sale_items si JOIN sales s ON si.sale_id = s.id ORDER BY s.created_at ASC").all() as any[];
     }
 
     // Products - always sync all (for updates)

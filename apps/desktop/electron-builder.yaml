@@ -18,6 +18,7 @@ files:
   - package.json
   - api-server.cjs
   - "!**/*.map" # Exclude source maps
+  - "!dist/release/**/*" # Never include previous release outputs
   - "!dist/build/**/*" # Never include previous electron-builder outputs
   - "!dist/win-unpacked/**/*" # Never include unpacked outputs
   - "!**/*.md" # Exclude markdown files
