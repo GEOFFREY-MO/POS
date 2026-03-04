@@ -2250,6 +2250,8 @@ const SellScreen = ({
   const [redeemPoints, setRedeemPoints] = useState<number>(0);
   const [customerSuggestions, setCustomerSuggestions] = useState<any[]>([]);
   const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const [receiptPanelOpen, setReceiptPanelOpen] = useState(false);
+  const [receiptFilter, setReceiptFilter] = useState("");
   const [scanToast, setScanToast] = useState<{ kind: "ok" | "bad"; msg: string } | null>(null);
   const [scanLockUntil, setScanLockUntil] = useState<number>(0);
   const [scanHighlightId, setScanHighlightId] = useState<string | null>(null);
@@ -2665,11 +2667,14 @@ const SellScreen = ({
           customerPoints !== null
             ? Math.max(0, customerPoints + (saleResult?.pointsEarned ?? 0) - (saleResult?.pointsRedeemed ?? 0))
             : undefined,
+        receiptPrimaryColor: settings?.receiptPrimaryColor ?? "#0d9488",
+        receiptSecondaryColor: settings?.receiptSecondaryColor ?? "#1e293b",
+        receiptAccentColor: settings?.receiptAccentColor ?? "#f8fafc",
         when: new Date().toLocaleString(),
       };
       setReceipt(newReceipt);
       setReceiptLog((prev) => {
-        const updated = [newReceipt, ...prev].slice(0, 50);
+        const updated = [newReceipt, ...prev].slice(0, 100);
         localStorage.setItem("receipt-log", JSON.stringify(updated));
         return updated;
       });
@@ -3359,36 +3364,42 @@ const SellScreen = ({
 
       {receiptLog.length > 0 && (
         <div className="mt-4 rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
-          <div className="flex items-center justify-between">
+          <button className="flex w-full items-center justify-between" onClick={() => setReceiptPanelOpen(!receiptPanelOpen)}>
             <p className="text-sm font-semibold text-[var(--fg)]">Recent receipts</p>
-            <span className="text-xs text-[var(--muted)]">Last {receiptLog.length}</span>
-          </div>
-          <div className="mt-2 space-y-2">
-            {receiptLog.map((r) => (
-              <div key={r.number} className="flex items-center justify-between rounded-md border border-[var(--stroke)] px-3 py-2">
-                <div className="text-xs text-[var(--muted)]">
-                  #{r.number} • {r.business} • {r.when}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]"
-                    onClick={() => setReceipt(r)}
-                  >
-                    View
-                  </button>
-                  <button
-                    className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]"
-                    onClick={() => {
-                      setReceipt(r);
-                      window.print();
-                    }}
-                  >
-                    Reprint
-                  </button>
-                </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-[var(--muted)]">{receiptLog.length} transactions</span>
+              <svg className={`h-4 w-4 text-[var(--muted)] transition-transform ${receiptPanelOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </div>
+          </button>
+          {receiptPanelOpen && (
+            <div className="mt-3">
+              <input
+                type="text"
+                placeholder="Filter by receipt #, business, customer..."
+                value={receiptFilter}
+                onChange={(e) => setReceiptFilter(e.target.value)}
+                className="mb-2 w-full rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--fg)]"
+              />
+              <div className="max-h-64 overflow-auto space-y-1">
+                {receiptLog.filter((r: any) => {
+                  if (!receiptFilter.trim()) return true;
+                  const term = receiptFilter.toLowerCase();
+                  return String(r.number).includes(term) || (r.business ?? "").toLowerCase().includes(term) || (r.when ?? "").toLowerCase().includes(term) || (r.customer ?? "").toLowerCase().includes(term);
+                }).map((r: any) => (
+                  <div key={r.number} className="flex items-center justify-between rounded-md border border-[var(--stroke)] px-3 py-2">
+                    <div className="text-xs text-[var(--muted)]">
+                      <span className="font-semibold text-[var(--fg)]">#{r.number}</span> • {r.business} • {r.when}
+                      {r.customer && <span className="ml-1 text-emerald-400">• {r.customer}</span>}
+                    </div>
+                    <div className="flex gap-2">
+                      <button className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]" onClick={() => setReceipt(r)}>View</button>
+                      <button className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]" onClick={() => { setReceipt(r); setTimeout(() => window.print(), 300); }}>Reprint</button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -9808,12 +9819,14 @@ const receiptHtml = (receipt: any, currency: string, appVersion: string) => {
   const toFileUrl = (p: string) => {
     const v = String(p || "");
     if (v.startsWith("http://") || v.startsWith("https://") || v.startsWith("file:") || v.startsWith("data:")) return v;
-    // best-effort Windows path -> file URL
     if (/^[a-zA-Z]:\\/.test(v)) return `file:///${v.replace(/\\/g, "/")}`;
     return v;
   };
 
   const logo = receipt.logo ? toFileUrl(receipt.logo) : "";
+  const primaryColor = receipt.receiptPrimaryColor ?? "#0d9488";
+  const textColor = receipt.receiptSecondaryColor ?? "#1e293b";
+  const bgColor = receipt.receiptAccentColor ?? "#f8fafc";
 
   const items = (receipt.lines ?? []) as any[];
   const taxRows = Object.entries(receipt.taxGroups ?? {}) as any[];
@@ -9826,14 +9839,14 @@ const receiptHtml = (receipt: any, currency: string, appVersion: string) => {
 <title>Receipt</title>
 <style>
   :root{
-    --g-900:#064e3b;
-    --g-800:#065f46;
-    --g-700:#047857;
-    --g-200:#bbf7d0;
-    --g-100:#dcfce7;
-    --g-50:#f0fdf4;
-    --ink:#0f172a;
-    --muted:#334155;
+    --g-900:${primaryColor};
+    --g-800:${primaryColor};
+    --g-700:${primaryColor};
+    --g-200:${primaryColor}33;
+    --g-100:${primaryColor}1a;
+    --g-50:${bgColor};
+    --ink:${textColor};
+    --muted:${textColor}cc;
   }
   *{ box-sizing:border-box; }
   body{ margin:0; padding:4px; background:var(--g-50); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--ink); font-size:7px; }
