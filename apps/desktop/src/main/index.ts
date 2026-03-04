@@ -142,7 +142,7 @@ app.on("window-all-closed", () => {
 ipcMain.handle("ping", () => "pong");
 
 ipcMain.handle("backup-db", async (_event, args: { destDir?: string }) => {
-  const destDir = (args?.destDir || "").trim();
+  const destDir = (args?.destDir || "").trim().replace(/^["']+|["']+$/g, "");
   if (!destDir) throw new Error("Backup folder path is not set.");
   fs.mkdirSync(destDir, { recursive: true });
   if (!fs.existsSync(DB_PATH)) {
