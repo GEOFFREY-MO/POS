@@ -55,6 +55,17 @@ type Setting = {
   lowStockSoundEnabled?: boolean;
   allowEmployeeExpenses?: boolean;
   taxIncluded?: boolean;
+  smtpHost?: string | null;
+  smtpPort?: number;
+  smtpUser?: string | null;
+  smtpPass?: string | null;
+  smtpFrom?: string | null;
+  atrEnabled?: boolean;
+  atrDeviceId?: string | null;
+  receiptPrimaryColor?: string;
+  receiptSecondaryColor?: string;
+  receiptAccentColor?: string;
+  cashDrawerEnabled?: boolean;
 };
 
 type Branch = { id: string; name: string; currency: string; tax_rate: number };
@@ -410,7 +421,7 @@ const AppContent = ({
   // Background auto-sync: periodically push to Google Sheets if URL is set
   // Includes exponential backoff for retries
   useEffect(() => {
-    if (!autoSyncEnabled || role !== "admin") return;
+    if (!autoSyncEnabled) return;
 
     const runSync = async () => {
       try {
@@ -2237,10 +2248,25 @@ const SellScreen = ({
   const [customerPhoneLookup, setCustomerPhoneLookup] = useState("");
   const [customerPoints, setCustomerPoints] = useState<number | null>(null);
   const [redeemPoints, setRedeemPoints] = useState<number>(0);
+  const [customerSuggestions, setCustomerSuggestions] = useState<any[]>([]);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
   const [scanToast, setScanToast] = useState<{ kind: "ok" | "bad"; msg: string } | null>(null);
   const [scanLockUntil, setScanLockUntil] = useState<number>(0);
   const [scanHighlightId, setScanHighlightId] = useState<string | null>(null);
   const qc = useQueryClient();
+
+  // Keyboard shortcuts for speed
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+      if (e.key === "F2") { e.preventDefault(); document.querySelector<HTMLInputElement>('[placeholder="Search by name or barcode"]')?.focus(); }
+      if (e.key === "F4") { e.preventDefault(); const btn = document.querySelector<HTMLButtonElement>('[class*="bg-emerald-600"]'); btn?.click(); }
+      if (e.key === "F5") { e.preventDefault(); const exact = document.querySelectorAll<HTMLButtonElement>('button'); exact.forEach(b => { if (b.textContent === "Cash exact") b.click(); }); }
+      if (e.key === "Escape") { e.preventDefault(); document.querySelector<HTMLInputElement>('[placeholder="Search by name or barcode"]')?.blur(); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Auto-hide scan toast after 2 seconds
   useEffect(() => {
@@ -2368,6 +2394,17 @@ const SellScreen = ({
       .then((c) => setCustomerPoints(c?.points ?? null))
       .catch(() => setCustomerPoints(null));
   }, [customerPhoneLookup]);
+
+  useEffect(() => {
+    const q = (customer.name || customer.contact || "").trim();
+    if (q.length < 2) { setCustomerSuggestions([]); return; }
+    const t = setTimeout(() => {
+      api<any[]>(`/customers?search=${encodeURIComponent(q)}&limit=5`)
+        .then((r) => setCustomerSuggestions(r ?? []))
+        .catch(() => setCustomerSuggestions([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [customer.name, customer.contact]);
 
   useEffect(() => {
     // Always update from props when they have valid values
@@ -3200,20 +3237,59 @@ const SellScreen = ({
       {/* Customer Info Section */}
       <div className="mt-4 rounded-xl border border-[var(--stroke)] bg-[var(--surface)] p-3">
         <p className="text-xs font-semibold text-[var(--muted)] mb-2">Customer Details (Optional)</p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <input
-            placeholder="Customer name"
-            value={customer.name}
-            onChange={(e) => setCustomer((c) => ({ ...c, name: e.target.value }))}
-            className="w-full rounded-md border border-[var(--stroke)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--fg)]"
-          />
+        <div className="grid gap-2 sm:grid-cols-2 relative">
+          <div className="relative">
+            <input
+              placeholder="Customer name"
+              value={customer.name}
+              onChange={(e) => { setCustomer((c) => ({ ...c, name: e.target.value })); setShowCustomerSuggestions(true); }}
+              onFocus={() => setShowCustomerSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowCustomerSuggestions(false), 200)}
+              className="w-full rounded-md border border-[var(--stroke)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--fg)]"
+            />
+            {showCustomerSuggestions && customerSuggestions.length > 0 && (
+              <div className="absolute z-50 left-0 right-0 top-full mt-1 rounded-md border border-[var(--stroke)] bg-[var(--card)] shadow-lg max-h-48 overflow-auto">
+                {customerSuggestions.map((s: any) => (
+                  <button
+                    key={s.id}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-[var(--accent-soft)] border-b border-[var(--stroke)] last:border-0"
+                    onMouseDown={() => {
+                      setCustomer({ name: s.name ?? "", contact: s.phone ?? "" });
+                      setCustomerPoints(s.points ?? 0);
+                      setShowCustomerSuggestions(false);
+                    }}
+                  >
+                    <span className="font-medium text-[var(--fg)]">{s.name ?? "—"}</span>
+                    <span className="ml-2 text-xs text-[var(--muted)]">{s.phone ?? ""}</span>
+                    {s.visit_count > 0 && <span className="ml-2 text-xs text-emerald-400">{s.visit_count} visits</span>}
+                    {s.points > 0 && <span className="ml-2 text-xs text-amber-400">{s.points} pts</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <input
             placeholder="Phone / Contact"
             value={customer.contact}
-            onChange={(e) => setCustomer((c) => ({ ...c, contact: e.target.value }))}
+            onChange={(e) => { setCustomer((c) => ({ ...c, contact: e.target.value })); setShowCustomerSuggestions(true); }}
             className="w-full rounded-md border border-[var(--stroke)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--fg)]"
           />
         </div>
+        {customerPoints !== null && customerPoints > 0 && (
+          <div className="mt-2 flex items-center gap-3">
+            <span className="text-xs text-amber-400 font-semibold">Points: {customerPoints.toFixed(1)}</span>
+            <input
+              type="number"
+              min={0}
+              max={customerPoints}
+              value={redeemPoints}
+              onChange={(e) => setRedeemPoints(Math.min(Number(e.target.value) || 0, customerPoints))}
+              placeholder="Redeem"
+              className="w-24 rounded-md border border-[var(--stroke)] bg-[var(--card)] px-2 py-1 text-xs text-[var(--fg)]"
+            />
+            <span className="text-xs text-[var(--muted)]">points to redeem</span>
+          </div>
+        )}
       </div>
 
       {/* Park / Resume Sale Section */}
@@ -8179,6 +8255,127 @@ const AdminPage = ({
         </p>
       </div>
     </div>
+
+    {/* ATR Integration */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">ATR Integration (Kenya)</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Enable Advance Tax Rulings device integration for KRA compliance.</p>
+      <div className="mt-3 flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs text-[var(--fg)]">
+          <input
+            type="checkbox"
+            checked={settings.atrEnabled ?? false}
+            onChange={async () => {
+              try {
+                await api("/settings/atr", { method: "POST", body: JSON.stringify({ atrEnabled: !(settings.atrEnabled ?? false) }) });
+                qc.invalidateQueries({ queryKey: ["settings"] });
+              } catch {}
+            }}
+            className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
+          />
+          ATR enabled
+        </label>
+      </div>
+      {settings.atrEnabled && (
+        <div className="mt-2">
+          <label className="text-xs text-[var(--muted)]">ATR Device ID</label>
+          <input
+            type="text"
+            defaultValue={settings.atrDeviceId ?? ""}
+            onBlur={async (e) => {
+              try {
+                await api("/settings/atr", { method: "POST", body: JSON.stringify({ atrEnabled: true, atrDeviceId: e.target.value }) });
+                qc.invalidateQueries({ queryKey: ["settings"] });
+              } catch {}
+            }}
+            className="mt-1 w-full rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
+            placeholder="Enter ATR device ID"
+          />
+        </div>
+      )}
+    </div>
+
+    {/* Receipt Color Customization */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">Receipt Colors</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Customize the colors of your printed receipts. Changes apply to all employees.</p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div>
+          <label className="text-xs text-[var(--muted)]">Header color</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input type="color" defaultValue={settings.receiptPrimaryColor ?? "#0d9488"} onChange={async (e) => {
+              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptPrimaryColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
+            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
+            <span className="text-xs text-[var(--fg)]">{settings.receiptPrimaryColor ?? "#0d9488"}</span>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-[var(--muted)]">Text color</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input type="color" defaultValue={settings.receiptSecondaryColor ?? "#1e293b"} onChange={async (e) => {
+              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptSecondaryColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
+            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
+            <span className="text-xs text-[var(--fg)]">{settings.receiptSecondaryColor ?? "#1e293b"}</span>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-[var(--muted)]">Background</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input type="color" defaultValue={settings.receiptAccentColor ?? "#f8fafc"} onChange={async (e) => {
+              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptAccentColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
+            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
+            <span className="text-xs text-[var(--fg)]">{settings.receiptAccentColor ?? "#f8fafc"}</span>
+          </div>
+        </div>
+      </div>
+      {/* Receipt Preview */}
+      <div className="mt-4 rounded-lg border border-[var(--stroke)] p-3" style={{ backgroundColor: settings.receiptAccentColor ?? "#f8fafc", maxWidth: 280 }}>
+        <div className="rounded px-2 py-1 text-center text-xs font-bold text-white" style={{ backgroundColor: settings.receiptPrimaryColor ?? "#0d9488" }}>
+          {settings.businessName} – Preview
+        </div>
+        <div className="mt-2 text-center" style={{ color: settings.receiptSecondaryColor ?? "#1e293b" }}>
+          <p className="text-[10px]">Receipt #1001</p>
+          <p className="text-[10px]">Item 1 — {settings.currency} 500</p>
+          <p className="text-[10px] font-bold mt-1">TOTAL: {settings.currency} 500</p>
+        </div>
+      </div>
+    </div>
+
+    {/* SMTP Email Configuration */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">Email (SMTP) Configuration</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Configure SMTP to email receipts to customers.</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <input placeholder="SMTP Host" defaultValue={settings.smtpHost ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpHost: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="SMTP Port" type="number" defaultValue={settings.smtpPort ?? 587} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpPort: Number(e.target.value) }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="SMTP Username" defaultValue={settings.smtpUser ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpUser: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="SMTP Password" type="password" defaultValue={settings.smtpPass ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpPass: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="From Email" defaultValue={settings.smtpFrom ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpFrom: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+      </div>
+    </div>
+
+    {/* Cash Drawer */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">Cash Drawer</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Auto-open cash drawer after sale when connected via USB/serial.</p>
+      <div className="mt-3 flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs text-[var(--fg)]">
+          <input
+            type="checkbox"
+            checked={settings.cashDrawerEnabled ?? false}
+            onChange={async () => {
+              try {
+                await api("/settings/cash-drawer", { method: "POST", body: JSON.stringify({ enabled: !(settings.cashDrawerEnabled ?? false) }) });
+                qc.invalidateQueries({ queryKey: ["settings"] });
+              } catch {}
+            }}
+            className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
+          />
+          Enable auto-open cash drawer
+        </label>
+      </div>
+    </div>
+
     <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
       <h3 className="text-sm font-semibold text-[var(--fg)]">Backups</h3>
       <p className="mt-2 text-xs text-[var(--muted)]">
