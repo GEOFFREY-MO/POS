@@ -434,6 +434,59 @@ const ensureSchema = (db: Db) => {
   } catch {
     // ignore
   }
+
+  // Migration: add customer enhancements
+  try {
+    const cols = db.prepare("PRAGMA table_info(customers)").all() as any[];
+    if (!cols.some((c: any) => String(c?.name) === "email")) {
+      db.exec("ALTER TABLE customers ADD COLUMN email TEXT");
+    }
+    if (!cols.some((c: any) => String(c?.name) === "phone2")) {
+      db.exec("ALTER TABLE customers ADD COLUMN phone2 TEXT");
+    }
+    if (!cols.some((c: any) => String(c?.name) === "notes")) {
+      db.exec("ALTER TABLE customers ADD COLUMN notes TEXT");
+    }
+  } catch { /* ignore */ }
+
+  // Migration: add SMTP settings
+  try {
+    const cols = db.prepare("PRAGMA table_info(settings)").all() as any[];
+    if (!cols.some((c: any) => String(c?.name) === "smtp_host")) {
+      db.exec("ALTER TABLE settings ADD COLUMN smtp_host TEXT");
+      db.exec("ALTER TABLE settings ADD COLUMN smtp_port INTEGER DEFAULT 587");
+      db.exec("ALTER TABLE settings ADD COLUMN smtp_user TEXT");
+      db.exec("ALTER TABLE settings ADD COLUMN smtp_pass TEXT");
+      db.exec("ALTER TABLE settings ADD COLUMN smtp_from TEXT");
+    }
+  } catch { /* ignore */ }
+
+  // Migration: add ATR settings
+  try {
+    const cols = db.prepare("PRAGMA table_info(settings)").all() as any[];
+    if (!cols.some((c: any) => String(c?.name) === "atr_enabled")) {
+      db.exec("ALTER TABLE settings ADD COLUMN atr_enabled INTEGER NOT NULL DEFAULT 0");
+      db.exec("ALTER TABLE settings ADD COLUMN atr_device_id TEXT");
+    }
+  } catch { /* ignore */ }
+
+  // Migration: add receipt color customization
+  try {
+    const cols = db.prepare("PRAGMA table_info(settings)").all() as any[];
+    if (!cols.some((c: any) => String(c?.name) === "receipt_primary_color")) {
+      db.exec("ALTER TABLE settings ADD COLUMN receipt_primary_color TEXT DEFAULT '#0d9488'");
+      db.exec("ALTER TABLE settings ADD COLUMN receipt_secondary_color TEXT DEFAULT '#1e293b'");
+      db.exec("ALTER TABLE settings ADD COLUMN receipt_accent_color TEXT DEFAULT '#f8fafc'");
+    }
+  } catch { /* ignore */ }
+
+  // Migration: add cash drawer setting
+  try {
+    const cols = db.prepare("PRAGMA table_info(settings)").all() as any[];
+    if (!cols.some((c: any) => String(c?.name) === "cash_drawer_enabled")) {
+      db.exec("ALTER TABLE settings ADD COLUMN cash_drawer_enabled INTEGER NOT NULL DEFAULT 0");
+    }
+  } catch { /* ignore */ }
 };
 
 const ensureDb = (dbPath: string): Db => {
@@ -460,6 +513,9 @@ const ensureDb = (dbPath: string): Db => {
       CREATE INDEX IF NOT EXISTS idx_inventory_movements_product ON inventory_movements(product_id);
       CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(expense_date);
       CREATE INDEX IF NOT EXISTS idx_expenses_approved ON expenses(approved);
+      CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone);
+      CREATE INDEX IF NOT EXISTS idx_customers_name ON customers(name);
+      CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id);
     `);
   } catch {
     // Indexes may already exist
@@ -893,6 +949,17 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       lowStockSoundEnabled: row.low_stock_sound_enabled === 1,
       allowEmployeeExpenses: row.allow_employee_expenses === 1,
       taxIncluded: row.tax_included === 1,
+      smtpHost: row.smtp_host ?? null,
+      smtpPort: row.smtp_port ?? 587,
+      smtpUser: row.smtp_user ?? null,
+      smtpPass: row.smtp_pass ?? null,
+      smtpFrom: row.smtp_from ?? null,
+      atrEnabled: row.atr_enabled === 1,
+      atrDeviceId: row.atr_device_id ?? null,
+      receiptPrimaryColor: row.receipt_primary_color ?? '#0d9488',
+      receiptSecondaryColor: row.receipt_secondary_color ?? '#1e293b',
+      receiptAccentColor: row.receipt_accent_color ?? '#f8fafc',
+      cashDrawerEnabled: row.cash_drawer_enabled === 1,
     };
   });
 
@@ -3199,7 +3266,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     return now() + interval;
   };
 
-  app.get("/sync/sheets/queue", { preHandler: [requireAdmin as any] }, async () => {
+  app.get("/sync/sheets/queue", { preHandler: [requireAuth as any] }, async () => {
     return db
       .prepare(
         "SELECT id, kind, status, error, attempt_count, next_retry_at, created_at, updated_at, last_attempt_at FROM sync_queue ORDER BY id DESC LIMIT 50"
@@ -3208,7 +3275,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
   });
 
   // Get pending items that are ready to retry
-  app.get("/sync/sheets/pending", { preHandler: [requireAdmin as any] }, async () => {
+  app.get("/sync/sheets/pending", { preHandler: [requireAuth as any] }, async () => {
     const ts = now();
     return db
       .prepare(
@@ -3408,7 +3475,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
   };
 
   // Get sync status
-  app.get("/sync/status", { preHandler: [requireAdmin as any] }, async () => {
+  app.get("/sync/status", { preHandler: [requireAuth as any] }, async () => {
     const trackers = db.prepare("SELECT * FROM sync_tracker ORDER BY data_type").all() as any[];
     const totalSales = (db.prepare("SELECT COUNT(*) as cnt FROM sales").get() as any)?.cnt ?? 0;
     const totalProducts = (db.prepare("SELECT COUNT(*) as cnt FROM products").get() as any)?.cnt ?? 0;
@@ -3429,17 +3496,17 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
   });
 
   // Get sync data for manual copy/paste - only NEW data
-  app.get("/sync/export-data", { preHandler: [requireAdmin as any] }, async () => {
+  app.get("/sync/export-data", { preHandler: [requireAuth as any] }, async () => {
     return buildSyncPayload(true); // Only new data
   });
 
   // Get ALL data (full export)
-  app.get("/sync/export-all", { preHandler: [requireAdmin as any] }, async () => {
+  app.get("/sync/export-all", { preHandler: [requireAuth as any] }, async () => {
     return buildSyncPayload(false); // All data
   });
 
   // Mark as synced after manual copy
-  app.post("/sync/mark-synced", { preHandler: [requireAdmin as any] }, async (request) => {
+  app.post("/sync/mark-synced", { preHandler: [requireAuth as any] }, async (request) => {
     const payload = buildSyncPayload(true);
     markAsSynced(payload);
     return { success: true, message: "Data marked as synced", recordsMarked: payload.newRecords };
@@ -3452,7 +3519,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     return { success: true, message: "Sync tracker reset. Next export will include all data." };
   });
 
-  app.post("/sync/sheets/push", { preHandler: [requireAdmin as any] }, async () => {
+  app.post("/sync/sheets/push", { preHandler: [requireAuth as any] }, async () => {
     const settings =
       (db.prepare("SELECT * FROM settings WHERE id = 1").get() as any) ?? null;
     if (!settings?.google_sheet_url) throw badRequest("Google Sheet URL is not set in settings");
@@ -3505,7 +3572,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
   });
 
   // Retry a specific sync queue item
-  app.post("/sync/sheets/retry/:id", { preHandler: [requireAdmin as any] }, async (request, reply) => {
+  app.post("/sync/sheets/retry/:id", { preHandler: [requireAuth as any] }, async (request, reply) => {
     const params = z.object({ id: z.coerce.number() }).parse(request.params);
     const item = db.prepare("SELECT * FROM sync_queue WHERE id = ?").get(params.id) as any;
     if (!item) throw notFound("Queue item not found");
@@ -3532,7 +3599,7 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
   });
 
   // Mark a sync item for retry with backoff
-  app.post("/sync/sheets/schedule-retry/:id", { preHandler: [requireAdmin as any] }, async (request, reply) => {
+  app.post("/sync/sheets/schedule-retry/:id", { preHandler: [requireAuth as any] }, async (request, reply) => {
     const params = z.object({ id: z.coerce.number() }).parse(request.params);
     const item = db.prepare("SELECT * FROM sync_queue WHERE id = ?").get(params.id) as any;
     if (!item) throw notFound("Queue item not found");
@@ -3554,6 +3621,136 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     ).run(newAttemptCount, nextRetryAt, ts, ts, params.id);
 
     return { id: params.id, status: "retrying", attemptCount: newAttemptCount, nextRetryAt };
+  });
+
+  // Customer management
+  app.get("/customers", { preHandler: [requireAuth as any] }, async (request) => {
+    const query = z.object({
+      search: z.string().optional(),
+      limit: z.coerce.number().min(1).max(200).default(50),
+      offset: z.coerce.number().min(0).default(0),
+    }).parse(request.query);
+    const clauses: string[] = [];
+    const params: any[] = [];
+    if (query.search) {
+      clauses.push("(c.name LIKE ? OR c.phone LIKE ? OR c.phone2 LIKE ? OR c.email LIKE ?)");
+      params.push(`%${query.search}%`, `%${query.search}%`, `%${query.search}%`, `%${query.search}%`);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    const customers = db.prepare(
+      `SELECT c.*, COUNT(DISTINCT s.id) as visit_count, MAX(s.created_at) as last_visit
+       FROM customers c
+       LEFT JOIN sales s ON s.customer_id = c.id
+       ${where}
+       GROUP BY c.id
+       ORDER BY c.created_at DESC LIMIT ? OFFSET ?`
+    ).all(...params, query.limit, query.offset);
+    return customers;
+  });
+
+  app.get("/customers/:id", { preHandler: [requireAuth as any] }, async (request) => {
+    const params = z.object({ id: z.string() }).parse(request.params);
+    const customer = db.prepare(
+      `SELECT c.*, COUNT(DISTINCT s.id) as visit_count, MAX(s.created_at) as last_visit, SUM(s.total_amount) as total_spent
+       FROM customers c
+       LEFT JOIN sales s ON s.customer_id = c.id
+       WHERE c.id = ?
+       GROUP BY c.id`
+    ).get(params.id) as any;
+    if (!customer) throw notFound("Customer not found");
+    const recentSales = db.prepare(
+      "SELECT id, receipt_no, total_amount, payment_method, created_at FROM sales WHERE customer_id = ? ORDER BY created_at DESC LIMIT 20"
+    ).all(params.id);
+    return { ...customer, recentSales };
+  });
+
+  app.post("/customers", { preHandler: [requireAuth as any] }, async (request, reply) => {
+    const input = z.object({
+      name: z.string().min(1),
+      phone: z.string().optional(),
+      phone2: z.string().optional(),
+      email: z.string().optional(),
+      notes: z.string().optional(),
+    }).parse(request.body);
+    if (input.phone) {
+      const dup = db.prepare("SELECT id FROM customers WHERE phone = ?").get(input.phone);
+      if (dup) throw badRequest("Phone number already exists");
+    }
+    const id = nanoid();
+    const ts = now();
+    db.prepare(
+      "INSERT INTO customers (id, name, phone, phone2, email, notes, points, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)"
+    ).run(id, input.name, input.phone ?? null, input.phone2 ?? null, input.email ?? null, input.notes ?? null, ts, ts);
+    reply.code(201).send({ id, ...input, points: 0, createdAt: ts });
+  });
+
+  app.put("/customers/:id", { preHandler: [requireAuth as any] }, async (request, reply) => {
+    const params = z.object({ id: z.string() }).parse(request.params);
+    const input = z.object({
+      name: z.string().optional(),
+      phone: z.string().optional(),
+      phone2: z.string().optional(),
+      email: z.string().optional(),
+      notes: z.string().optional(),
+    }).parse(request.body);
+    const exists = db.prepare("SELECT id FROM customers WHERE id = ?").get(params.id);
+    if (!exists) throw notFound("Customer not found");
+    if (input.phone) {
+      const dup = db.prepare("SELECT id FROM customers WHERE phone = ? AND id != ?").get(input.phone, params.id);
+      if (dup) throw badRequest("Phone number already in use");
+    }
+    db.prepare(
+      "UPDATE customers SET name = COALESCE(?, name), phone = COALESCE(?, phone), phone2 = COALESCE(?, phone2), email = COALESCE(?, email), notes = COALESCE(?, notes), updated_at = ? WHERE id = ?"
+    ).run(input.name ?? null, input.phone ?? null, input.phone2 ?? null, input.email ?? null, input.notes ?? null, now(), params.id);
+    reply.send({ id: params.id });
+  });
+
+  // Settings update endpoints for new features
+  app.post("/settings/smtp", { preHandler: [requireAdmin as any] }, async (request, reply) => {
+    const input = z.object({
+      smtpHost: z.string().optional(),
+      smtpPort: z.number().optional(),
+      smtpUser: z.string().optional(),
+      smtpPass: z.string().optional(),
+      smtpFrom: z.string().optional(),
+    }).parse(request.body);
+    const ts = now();
+    db.prepare(
+      "UPDATE settings SET smtp_host = COALESCE(?, smtp_host), smtp_port = COALESCE(?, smtp_port), smtp_user = COALESCE(?, smtp_user), smtp_pass = COALESCE(?, smtp_pass), smtp_from = COALESCE(?, smtp_from), updated_at = ? WHERE id = 1"
+    ).run(input.smtpHost ?? null, input.smtpPort ?? null, input.smtpUser ?? null, input.smtpPass ?? null, input.smtpFrom ?? null, ts);
+    reply.send({ success: true });
+  });
+
+  app.post("/settings/atr", { preHandler: [requireAdmin as any] }, async (request, reply) => {
+    const input = z.object({
+      atrEnabled: z.boolean(),
+      atrDeviceId: z.string().optional(),
+    }).parse(request.body);
+    const ts = now();
+    db.prepare("UPDATE settings SET atr_enabled = ?, atr_device_id = COALESCE(?, atr_device_id), updated_at = ? WHERE id = 1")
+      .run(input.atrEnabled ? 1 : 0, input.atrDeviceId ?? null, ts);
+    reply.send({ atrEnabled: input.atrEnabled });
+  });
+
+  app.post("/settings/receipt-colors", { preHandler: [requireAdmin as any] }, async (request, reply) => {
+    const input = z.object({
+      receiptPrimaryColor: z.string().optional(),
+      receiptSecondaryColor: z.string().optional(),
+      receiptAccentColor: z.string().optional(),
+    }).parse(request.body);
+    const ts = now();
+    db.prepare(
+      "UPDATE settings SET receipt_primary_color = COALESCE(?, receipt_primary_color), receipt_secondary_color = COALESCE(?, receipt_secondary_color), receipt_accent_color = COALESCE(?, receipt_accent_color), updated_at = ? WHERE id = 1"
+    ).run(input.receiptPrimaryColor ?? null, input.receiptSecondaryColor ?? null, input.receiptAccentColor ?? null, ts);
+    reply.send({ success: true });
+  });
+
+  app.post("/settings/cash-drawer", { preHandler: [requireAdmin as any] }, async (request, reply) => {
+    const input = z.object({ enabled: z.boolean() }).parse(request.body);
+    const ts = now();
+    db.prepare("UPDATE settings SET cash_drawer_enabled = ?, updated_at = ? WHERE id = 1")
+      .run(input.enabled ? 1 : 0, ts);
+    reply.send({ cashDrawerEnabled: input.enabled });
   });
 
   app.setErrorHandler((error, _request, reply) => {

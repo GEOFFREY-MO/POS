@@ -55,6 +55,17 @@ type Setting = {
   lowStockSoundEnabled?: boolean;
   allowEmployeeExpenses?: boolean;
   taxIncluded?: boolean;
+  smtpHost?: string | null;
+  smtpPort?: number;
+  smtpUser?: string | null;
+  smtpPass?: string | null;
+  smtpFrom?: string | null;
+  atrEnabled?: boolean;
+  atrDeviceId?: string | null;
+  receiptPrimaryColor?: string;
+  receiptSecondaryColor?: string;
+  receiptAccentColor?: string;
+  cashDrawerEnabled?: boolean;
 };
 
 type Branch = { id: string; name: string; currency: string; tax_rate: number };
@@ -410,7 +421,7 @@ const AppContent = ({
   // Background auto-sync: periodically push to Google Sheets if URL is set
   // Includes exponential backoff for retries
   useEffect(() => {
-    if (!autoSyncEnabled || role !== "admin") return;
+    if (!autoSyncEnabled) return;
 
     const runSync = async () => {
       try {
@@ -2237,10 +2248,27 @@ const SellScreen = ({
   const [customerPhoneLookup, setCustomerPhoneLookup] = useState("");
   const [customerPoints, setCustomerPoints] = useState<number | null>(null);
   const [redeemPoints, setRedeemPoints] = useState<number>(0);
+  const [customerSuggestions, setCustomerSuggestions] = useState<any[]>([]);
+  const [showCustomerSuggestions, setShowCustomerSuggestions] = useState(false);
+  const [receiptPanelOpen, setReceiptPanelOpen] = useState(false);
+  const [receiptFilter, setReceiptFilter] = useState("");
   const [scanToast, setScanToast] = useState<{ kind: "ok" | "bad"; msg: string } | null>(null);
   const [scanLockUntil, setScanLockUntil] = useState<number>(0);
   const [scanHighlightId, setScanHighlightId] = useState<string | null>(null);
   const qc = useQueryClient();
+
+  // Keyboard shortcuts for speed
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement) return;
+      if (e.key === "F2") { e.preventDefault(); document.querySelector<HTMLInputElement>('[placeholder="Search by name or barcode"]')?.focus(); }
+      if (e.key === "F4") { e.preventDefault(); const btn = document.querySelector<HTMLButtonElement>('[class*="bg-emerald-600"]'); btn?.click(); }
+      if (e.key === "F5") { e.preventDefault(); const exact = document.querySelectorAll<HTMLButtonElement>('button'); exact.forEach(b => { if (b.textContent === "Cash exact") b.click(); }); }
+      if (e.key === "Escape") { e.preventDefault(); document.querySelector<HTMLInputElement>('[placeholder="Search by name or barcode"]')?.blur(); }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
 
   // Auto-hide scan toast after 2 seconds
   useEffect(() => {
@@ -2368,6 +2396,17 @@ const SellScreen = ({
       .then((c) => setCustomerPoints(c?.points ?? null))
       .catch(() => setCustomerPoints(null));
   }, [customerPhoneLookup]);
+
+  useEffect(() => {
+    const q = (customer.name || customer.contact || "").trim();
+    if (q.length < 2) { setCustomerSuggestions([]); return; }
+    const t = setTimeout(() => {
+      api<any[]>(`/customers?search=${encodeURIComponent(q)}&limit=5`)
+        .then((r) => setCustomerSuggestions(r ?? []))
+        .catch(() => setCustomerSuggestions([]));
+    }, 300);
+    return () => clearTimeout(t);
+  }, [customer.name, customer.contact]);
 
   useEffect(() => {
     // Always update from props when they have valid values
@@ -2628,11 +2667,14 @@ const SellScreen = ({
           customerPoints !== null
             ? Math.max(0, customerPoints + (saleResult?.pointsEarned ?? 0) - (saleResult?.pointsRedeemed ?? 0))
             : undefined,
+        receiptPrimaryColor: settings?.receiptPrimaryColor ?? "#0d9488",
+        receiptSecondaryColor: settings?.receiptSecondaryColor ?? "#1e293b",
+        receiptAccentColor: settings?.receiptAccentColor ?? "#f8fafc",
         when: new Date().toLocaleString(),
       };
       setReceipt(newReceipt);
       setReceiptLog((prev) => {
-        const updated = [newReceipt, ...prev].slice(0, 50);
+        const updated = [newReceipt, ...prev].slice(0, 100);
         localStorage.setItem("receipt-log", JSON.stringify(updated));
         return updated;
       });
@@ -3200,20 +3242,59 @@ const SellScreen = ({
       {/* Customer Info Section */}
       <div className="mt-4 rounded-xl border border-[var(--stroke)] bg-[var(--surface)] p-3">
         <p className="text-xs font-semibold text-[var(--muted)] mb-2">Customer Details (Optional)</p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <input
-            placeholder="Customer name"
-            value={customer.name}
-            onChange={(e) => setCustomer((c) => ({ ...c, name: e.target.value }))}
-            className="w-full rounded-md border border-[var(--stroke)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--fg)]"
-          />
+        <div className="grid gap-2 sm:grid-cols-2 relative">
+          <div className="relative">
+            <input
+              placeholder="Customer name"
+              value={customer.name}
+              onChange={(e) => { setCustomer((c) => ({ ...c, name: e.target.value })); setShowCustomerSuggestions(true); }}
+              onFocus={() => setShowCustomerSuggestions(true)}
+              onBlur={() => setTimeout(() => setShowCustomerSuggestions(false), 200)}
+              className="w-full rounded-md border border-[var(--stroke)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--fg)]"
+            />
+            {showCustomerSuggestions && customerSuggestions.length > 0 && (
+              <div className="absolute z-50 left-0 right-0 top-full mt-1 rounded-md border border-[var(--stroke)] bg-[var(--card)] shadow-lg max-h-48 overflow-auto">
+                {customerSuggestions.map((s: any) => (
+                  <button
+                    key={s.id}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-[var(--accent-soft)] border-b border-[var(--stroke)] last:border-0"
+                    onMouseDown={() => {
+                      setCustomer({ name: s.name ?? "", contact: s.phone ?? "" });
+                      setCustomerPoints(s.points ?? 0);
+                      setShowCustomerSuggestions(false);
+                    }}
+                  >
+                    <span className="font-medium text-[var(--fg)]">{s.name ?? "—"}</span>
+                    <span className="ml-2 text-xs text-[var(--muted)]">{s.phone ?? ""}</span>
+                    {s.visit_count > 0 && <span className="ml-2 text-xs text-emerald-400">{s.visit_count} visits</span>}
+                    {s.points > 0 && <span className="ml-2 text-xs text-amber-400">{s.points} pts</span>}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           <input
             placeholder="Phone / Contact"
             value={customer.contact}
-            onChange={(e) => setCustomer((c) => ({ ...c, contact: e.target.value }))}
+            onChange={(e) => { setCustomer((c) => ({ ...c, contact: e.target.value })); setShowCustomerSuggestions(true); }}
             className="w-full rounded-md border border-[var(--stroke)] bg-[var(--card)] px-3 py-2 text-sm text-[var(--fg)]"
           />
         </div>
+        {customerPoints !== null && customerPoints > 0 && (
+          <div className="mt-2 flex items-center gap-3">
+            <span className="text-xs text-amber-400 font-semibold">Points: {customerPoints.toFixed(1)}</span>
+            <input
+              type="number"
+              min={0}
+              max={customerPoints}
+              value={redeemPoints}
+              onChange={(e) => setRedeemPoints(Math.min(Number(e.target.value) || 0, customerPoints))}
+              placeholder="Redeem"
+              className="w-24 rounded-md border border-[var(--stroke)] bg-[var(--card)] px-2 py-1 text-xs text-[var(--fg)]"
+            />
+            <span className="text-xs text-[var(--muted)]">points to redeem</span>
+          </div>
+        )}
       </div>
 
       {/* Park / Resume Sale Section */}
@@ -3283,36 +3364,42 @@ const SellScreen = ({
 
       {receiptLog.length > 0 && (
         <div className="mt-4 rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
-          <div className="flex items-center justify-between">
+          <button className="flex w-full items-center justify-between" onClick={() => setReceiptPanelOpen(!receiptPanelOpen)}>
             <p className="text-sm font-semibold text-[var(--fg)]">Recent receipts</p>
-            <span className="text-xs text-[var(--muted)]">Last {receiptLog.length}</span>
-          </div>
-          <div className="mt-2 space-y-2">
-            {receiptLog.map((r) => (
-              <div key={r.number} className="flex items-center justify-between rounded-md border border-[var(--stroke)] px-3 py-2">
-                <div className="text-xs text-[var(--muted)]">
-                  #{r.number} • {r.business} • {r.when}
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]"
-                    onClick={() => setReceipt(r)}
-                  >
-                    View
-                  </button>
-                  <button
-                    className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]"
-                    onClick={() => {
-                      setReceipt(r);
-                      window.print();
-                    }}
-                  >
-                    Reprint
-                  </button>
-                </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-[var(--muted)]">{receiptLog.length} transactions</span>
+              <svg className={`h-4 w-4 text-[var(--muted)] transition-transform ${receiptPanelOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+            </div>
+          </button>
+          {receiptPanelOpen && (
+            <div className="mt-3">
+              <input
+                type="text"
+                placeholder="Filter by receipt #, business, customer..."
+                value={receiptFilter}
+                onChange={(e) => setReceiptFilter(e.target.value)}
+                className="mb-2 w-full rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--fg)]"
+              />
+              <div className="max-h-64 overflow-auto space-y-1">
+                {receiptLog.filter((r: any) => {
+                  if (!receiptFilter.trim()) return true;
+                  const term = receiptFilter.toLowerCase();
+                  return String(r.number).includes(term) || (r.business ?? "").toLowerCase().includes(term) || (r.when ?? "").toLowerCase().includes(term) || (r.customer ?? "").toLowerCase().includes(term);
+                }).map((r: any) => (
+                  <div key={r.number} className="flex items-center justify-between rounded-md border border-[var(--stroke)] px-3 py-2">
+                    <div className="text-xs text-[var(--muted)]">
+                      <span className="font-semibold text-[var(--fg)]">#{r.number}</span> • {r.business} • {r.when}
+                      {r.customer && <span className="ml-1 text-emerald-400">• {r.customer}</span>}
+                    </div>
+                    <div className="flex gap-2">
+                      <button className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]" onClick={() => setReceipt(r)}>View</button>
+                      <button className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-2 py-1 text-xs text-[var(--fg)]" onClick={() => { setReceipt(r); setTimeout(() => window.print(), 300); }}>Reprint</button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -8179,6 +8266,127 @@ const AdminPage = ({
         </p>
       </div>
     </div>
+
+    {/* ATR Integration */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">ATR Integration (Kenya)</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Enable Advance Tax Rulings device integration for KRA compliance.</p>
+      <div className="mt-3 flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs text-[var(--fg)]">
+          <input
+            type="checkbox"
+            checked={settings.atrEnabled ?? false}
+            onChange={async () => {
+              try {
+                await api("/settings/atr", { method: "POST", body: JSON.stringify({ atrEnabled: !(settings.atrEnabled ?? false) }) });
+                qc.invalidateQueries({ queryKey: ["settings"] });
+              } catch {}
+            }}
+            className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
+          />
+          ATR enabled
+        </label>
+      </div>
+      {settings.atrEnabled && (
+        <div className="mt-2">
+          <label className="text-xs text-[var(--muted)]">ATR Device ID</label>
+          <input
+            type="text"
+            defaultValue={settings.atrDeviceId ?? ""}
+            onBlur={async (e) => {
+              try {
+                await api("/settings/atr", { method: "POST", body: JSON.stringify({ atrEnabled: true, atrDeviceId: e.target.value }) });
+                qc.invalidateQueries({ queryKey: ["settings"] });
+              } catch {}
+            }}
+            className="mt-1 w-full rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
+            placeholder="Enter ATR device ID"
+          />
+        </div>
+      )}
+    </div>
+
+    {/* Receipt Color Customization */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">Receipt Colors</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Customize the colors of your printed receipts. Changes apply to all employees.</p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <div>
+          <label className="text-xs text-[var(--muted)]">Header color</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input type="color" defaultValue={settings.receiptPrimaryColor ?? "#0d9488"} onChange={async (e) => {
+              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptPrimaryColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
+            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
+            <span className="text-xs text-[var(--fg)]">{settings.receiptPrimaryColor ?? "#0d9488"}</span>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-[var(--muted)]">Text color</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input type="color" defaultValue={settings.receiptSecondaryColor ?? "#1e293b"} onChange={async (e) => {
+              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptSecondaryColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
+            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
+            <span className="text-xs text-[var(--fg)]">{settings.receiptSecondaryColor ?? "#1e293b"}</span>
+          </div>
+        </div>
+        <div>
+          <label className="text-xs text-[var(--muted)]">Background</label>
+          <div className="mt-1 flex items-center gap-2">
+            <input type="color" defaultValue={settings.receiptAccentColor ?? "#f8fafc"} onChange={async (e) => {
+              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptAccentColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
+            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
+            <span className="text-xs text-[var(--fg)]">{settings.receiptAccentColor ?? "#f8fafc"}</span>
+          </div>
+        </div>
+      </div>
+      {/* Receipt Preview */}
+      <div className="mt-4 rounded-lg border border-[var(--stroke)] p-3" style={{ backgroundColor: settings.receiptAccentColor ?? "#f8fafc", maxWidth: 280 }}>
+        <div className="rounded px-2 py-1 text-center text-xs font-bold text-white" style={{ backgroundColor: settings.receiptPrimaryColor ?? "#0d9488" }}>
+          {settings.businessName} – Preview
+        </div>
+        <div className="mt-2 text-center" style={{ color: settings.receiptSecondaryColor ?? "#1e293b" }}>
+          <p className="text-[10px]">Receipt #1001</p>
+          <p className="text-[10px]">Item 1 — {settings.currency} 500</p>
+          <p className="text-[10px] font-bold mt-1">TOTAL: {settings.currency} 500</p>
+        </div>
+      </div>
+    </div>
+
+    {/* SMTP Email Configuration */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">Email (SMTP) Configuration</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Configure SMTP to email receipts to customers.</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <input placeholder="SMTP Host" defaultValue={settings.smtpHost ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpHost: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="SMTP Port" type="number" defaultValue={settings.smtpPort ?? 587} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpPort: Number(e.target.value) }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="SMTP Username" defaultValue={settings.smtpUser ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpUser: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="SMTP Password" type="password" defaultValue={settings.smtpPass ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpPass: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input placeholder="From Email" defaultValue={settings.smtpFrom ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpFrom: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+      </div>
+    </div>
+
+    {/* Cash Drawer */}
+    <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
+      <h3 className="text-sm font-semibold text-[var(--fg)]">Cash Drawer</h3>
+      <p className="mt-1 text-xs text-[var(--muted)]">Auto-open cash drawer after sale when connected via USB/serial.</p>
+      <div className="mt-3 flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 text-xs text-[var(--fg)]">
+          <input
+            type="checkbox"
+            checked={settings.cashDrawerEnabled ?? false}
+            onChange={async () => {
+              try {
+                await api("/settings/cash-drawer", { method: "POST", body: JSON.stringify({ enabled: !(settings.cashDrawerEnabled ?? false) }) });
+                qc.invalidateQueries({ queryKey: ["settings"] });
+              } catch {}
+            }}
+            className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
+          />
+          Enable auto-open cash drawer
+        </label>
+      </div>
+    </div>
+
     <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
       <h3 className="text-sm font-semibold text-[var(--fg)]">Backups</h3>
       <p className="mt-2 text-xs text-[var(--muted)]">
@@ -9611,12 +9819,14 @@ const receiptHtml = (receipt: any, currency: string, appVersion: string) => {
   const toFileUrl = (p: string) => {
     const v = String(p || "");
     if (v.startsWith("http://") || v.startsWith("https://") || v.startsWith("file:") || v.startsWith("data:")) return v;
-    // best-effort Windows path -> file URL
     if (/^[a-zA-Z]:\\/.test(v)) return `file:///${v.replace(/\\/g, "/")}`;
     return v;
   };
 
   const logo = receipt.logo ? toFileUrl(receipt.logo) : "";
+  const primaryColor = receipt.receiptPrimaryColor ?? "#0d9488";
+  const textColor = receipt.receiptSecondaryColor ?? "#1e293b";
+  const bgColor = receipt.receiptAccentColor ?? "#f8fafc";
 
   const items = (receipt.lines ?? []) as any[];
   const taxRows = Object.entries(receipt.taxGroups ?? {}) as any[];
@@ -9629,14 +9839,14 @@ const receiptHtml = (receipt: any, currency: string, appVersion: string) => {
 <title>Receipt</title>
 <style>
   :root{
-    --g-900:#064e3b;
-    --g-800:#065f46;
-    --g-700:#047857;
-    --g-200:#bbf7d0;
-    --g-100:#dcfce7;
-    --g-50:#f0fdf4;
-    --ink:#0f172a;
-    --muted:#334155;
+    --g-900:${primaryColor};
+    --g-800:${primaryColor};
+    --g-700:${primaryColor};
+    --g-200:${primaryColor}33;
+    --g-100:${primaryColor}1a;
+    --g-50:${bgColor};
+    --ink:${textColor};
+    --muted:${textColor}cc;
   }
   *{ box-sizing:border-box; }
   body{ margin:0; padding:4px; background:var(--g-50); font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial; color:var(--ink); font-size:7px; }
