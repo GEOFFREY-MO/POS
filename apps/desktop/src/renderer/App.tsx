@@ -387,13 +387,30 @@ const AppContent = ({
   const [pageHistory, setPageHistory] = useState<Page[]>([]);
   const navigate = useCallback((next: Page) => {
     setPage((prev) => {
-      if (prev !== next) setPageHistory((h) => [...h, prev].slice(-30));
+      if (prev === next) return prev;
+      const hasUnsavedChanges = (window as any).__sellaHasUnsavedChanges === true;
+      if (hasUnsavedChanges) {
+        const confirmed = window.confirm(
+          "You have unsaved configuration changes. Leave this page without saving?"
+        );
+        if (!confirmed) return prev;
+        (window as any).__sellaHasUnsavedChanges = false;
+      }
+      setPageHistory((h) => [...h, prev].slice(-30));
       return next;
     });
   }, []);
   const goBack = useCallback(() => {
     setPageHistory((h) => {
       if (!h.length) return h;
+      const hasUnsavedChanges = (window as any).__sellaHasUnsavedChanges === true;
+      if (hasUnsavedChanges) {
+        const confirmed = window.confirm(
+          "You have unsaved configuration changes. Leave this page without saving?"
+        );
+        if (!confirmed) return h;
+        (window as any).__sellaHasUnsavedChanges = false;
+      }
       const prev = h[h.length - 1];
       setPage(prev);
       return h.slice(0, -1);
@@ -463,7 +480,7 @@ const AppContent = ({
   }, [autoSyncEnabled, role]);
 
   // Priority 1: Settings (needed immediately for setup check)
-  const { data: settings, refetch: refetchSettings, isFetching: loadingSettings } =
+  const { data: settings, refetch: refetchSettings, isPending: loadingSettings } =
     useQuery<Setting | null>({
       queryKey: ["settings"],
       queryFn: () => api("/settings"),
@@ -641,7 +658,7 @@ const AppContent = ({
     return localStorage.getItem("sella-product-key-verified") === "true";
   });
 
-  if (loadingSettings) {
+  if (loadingSettings && settings === undefined) {
     return (
       <div className="p-6 text-sm text-[var(--muted)]">
         Loading environment and settings...
@@ -7608,11 +7625,63 @@ const AdminPage = ({
   onSyncNow: () => void;
 }) => {
   const qc = useQueryClient();
+  const [generalDraft, setGeneralDraft] = useState(() => ({
+    businessName: settings.businessName ?? "",
+    poBox: settings.poBox ?? "",
+    town: settings.town ?? "",
+    telNo: settings.telNo ?? "",
+    kraPin: settings.kraPin ?? "",
+    returnPolicy: settings.returnPolicy ?? "",
+    cuSerialNo: settings.cuSerialNo ?? "",
+    cuInvoiceNo: settings.cuInvoiceNo ?? "",
+    receiptHeader: settings.receiptHeader ?? "",
+    receiptFooter: settings.receiptFooter ?? "",
+    backupPath: settings.backupPath ?? "",
+    currency: settings.currency ?? "KES",
+    taxRate: Number(settings.taxRate ?? 0),
+    loyaltyPointsRate: Number(settings.loyaltyPointsRate ?? 0.01),
+    loyaltyRedeemRate: Number(settings.loyaltyRedeemRate ?? 1),
+    taxIncluded: settings.taxIncluded ?? false,
+  }));
+  const [receiptColorsDraft, setReceiptColorsDraft] = useState(() => ({
+    receiptPrimaryColor: settings.receiptPrimaryColor ?? "#0d9488",
+    receiptSecondaryColor: settings.receiptSecondaryColor ?? "#1e293b",
+    receiptAccentColor: settings.receiptAccentColor ?? "#f8fafc",
+  }));
+  const [smtpDraft, setSmtpDraft] = useState(() => ({
+    smtpHost: settings.smtpHost ?? "",
+    smtpPort: Number(settings.smtpPort ?? 587),
+    smtpUser: settings.smtpUser ?? "",
+    smtpPass: settings.smtpPass ?? "",
+    smtpFrom: settings.smtpFrom ?? "",
+  }));
+  const [atrDraft, setAtrDraft] = useState(() => ({
+    atrEnabled: settings.atrEnabled ?? false,
+    atrDeviceId: settings.atrDeviceId ?? "",
+  }));
+  const [cashDrawerEnabled, setCashDrawerEnabled] = useState<boolean>(settings.cashDrawerEnabled ?? false);
+  const [saveBusy, setSaveBusy] = useState({
+    general: false,
+    colors: false,
+    smtp: false,
+    atr: false,
+    cashDrawer: false,
+    lowStock: false,
+    employeeExpenses: false,
+  });
+  const [saveErrors, setSaveErrors] = useState({
+    general: "" as string | null,
+    colors: "" as string | null,
+    smtp: "" as string | null,
+    atr: "" as string | null,
+    cashDrawer: "" as string | null,
+  });
   const [backupStatus, setBackupStatus] = useState<string>(() => localStorage.getItem("last-backup") || "Never");
   const [backupErr, setBackupErr] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [empForm, setEmpForm] = useState({ name: "", role: "seller" as Role, pin: "", active: true });
   const [empErr, setEmpErr] = useState<string | null>(null);
+  const [empBusy, setEmpBusy] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
   const [resetVal, setResetVal] = useState("");
   const [resetErr, setResetErr] = useState<string | null>(null);
@@ -7624,9 +7693,67 @@ const AdminPage = ({
   const [sheetMsg, setSheetMsg] = useState<string | null>(null);
   const [sheetErr, setSheetErr] = useState<string | null>(null);
   const [sheetBusy, setSheetBusy] = useState(false);
+  const [sheetSaveBusy, setSheetSaveBusy] = useState(false);
   const [autoSync, setAutoSync] = useState<boolean>(() => localStorage.getItem("auto-sync-enabled") === "true");
   const [lowStockSound, setLowStockSound] = useState<boolean>(settings.lowStockSoundEnabled !== false);
   const [employeeExpenses, setEmployeeExpenses] = useState<boolean>(settings.allowEmployeeExpenses ?? false);
+
+  const t = (v: string | null | undefined) => String(v ?? "").trim();
+  const generalChanged =
+    t(generalDraft.businessName) !== t(settings.businessName) ||
+    t(generalDraft.poBox) !== t(settings.poBox) ||
+    t(generalDraft.town) !== t(settings.town) ||
+    t(generalDraft.telNo) !== t(settings.telNo) ||
+    t(generalDraft.kraPin) !== t(settings.kraPin) ||
+    t(generalDraft.returnPolicy) !== t(settings.returnPolicy) ||
+    t(generalDraft.cuSerialNo) !== t(settings.cuSerialNo) ||
+    t(generalDraft.cuInvoiceNo) !== t(settings.cuInvoiceNo) ||
+    t(generalDraft.receiptHeader) !== t(settings.receiptHeader) ||
+    t(generalDraft.receiptFooter) !== t(settings.receiptFooter) ||
+    t(generalDraft.backupPath) !== t(settings.backupPath) ||
+    t(generalDraft.currency) !== t(settings.currency ?? "KES") ||
+    Number(generalDraft.taxRate ?? 0) !== Number(settings.taxRate ?? 0) ||
+    Number(generalDraft.loyaltyPointsRate ?? 0.01) !== Number(settings.loyaltyPointsRate ?? 0.01) ||
+    Number(generalDraft.loyaltyRedeemRate ?? 1) !== Number(settings.loyaltyRedeemRate ?? 1) ||
+    generalDraft.taxIncluded !== (settings.taxIncluded ?? false);
+  const colorsChanged =
+    receiptColorsDraft.receiptPrimaryColor !== (settings.receiptPrimaryColor ?? "#0d9488") ||
+    receiptColorsDraft.receiptSecondaryColor !== (settings.receiptSecondaryColor ?? "#1e293b") ||
+    receiptColorsDraft.receiptAccentColor !== (settings.receiptAccentColor ?? "#f8fafc");
+  const smtpChanged =
+    t(smtpDraft.smtpHost) !== t(settings.smtpHost) ||
+    Number(smtpDraft.smtpPort ?? 587) !== Number(settings.smtpPort ?? 587) ||
+    t(smtpDraft.smtpUser) !== t(settings.smtpUser) ||
+    smtpDraft.smtpPass !== (settings.smtpPass ?? "") ||
+    t(smtpDraft.smtpFrom) !== t(settings.smtpFrom);
+  const atrChanged =
+    atrDraft.atrEnabled !== (settings.atrEnabled ?? false) ||
+    (atrDraft.atrEnabled && t(atrDraft.atrDeviceId) !== t(settings.atrDeviceId));
+  const cashDrawerChanged = cashDrawerEnabled !== (settings.cashDrawerEnabled ?? false);
+  const sheetUrlChanged = t(sheetUrl) !== t(settings.googleSheetUrl);
+  const hasUnsavedChanges =
+    generalChanged || colorsChanged || smtpChanged || atrChanged || cashDrawerChanged || sheetUrlChanged;
+
+  useEffect(() => {
+    (window as any).__sellaHasUnsavedChanges = hasUnsavedChanges;
+  }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      if (!hasUnsavedChanges) return;
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [hasUnsavedChanges]);
+
+  useEffect(
+    () => () => {
+      (window as any).__sellaHasUnsavedChanges = false;
+    },
+    []
+  );
 
   const toggleAutoSync = () => {
     const next = !autoSync;
@@ -7634,31 +7761,178 @@ const AdminPage = ({
     localStorage.setItem("auto-sync-enabled", String(next));
   };
 
+  const saveGeneralSettings = async () => {
+    setSaveErrors((p) => ({ ...p, general: null }));
+    setSaveBusy((p) => ({ ...p, general: true }));
+    try {
+      if (!generalDraft.businessName.trim()) throw new Error("Business name is required.");
+      if (!generalDraft.currency.trim()) throw new Error("Currency is required.");
+      if (!Number.isFinite(Number(generalDraft.taxRate))) throw new Error("Tax rate must be a valid number.");
+      if (!Number.isFinite(Number(generalDraft.loyaltyPointsRate))) throw new Error("Loyalty points rate must be a valid number.");
+      if (!Number.isFinite(Number(generalDraft.loyaltyRedeemRate))) throw new Error("Loyalty redeem rate must be a valid number.");
+      if (Number(generalDraft.taxRate) < 0) throw new Error("Tax rate cannot be negative.");
+      if (Number(generalDraft.loyaltyPointsRate) < 0) throw new Error("Loyalty points rate cannot be negative.");
+      if (Number(generalDraft.loyaltyRedeemRate) < 0) throw new Error("Loyalty redeem rate cannot be negative.");
+      await api("/settings", {
+        method: "PUT",
+        body: JSON.stringify({
+          businessName: generalDraft.businessName.trim(),
+          poBox: generalDraft.poBox.trim() || null,
+          town: generalDraft.town.trim() || null,
+          telNo: generalDraft.telNo.trim() || null,
+          kraPin: generalDraft.kraPin.trim() || null,
+          returnPolicy: generalDraft.returnPolicy.trim() || null,
+          cuSerialNo: generalDraft.cuSerialNo.trim() || null,
+          cuInvoiceNo: generalDraft.cuInvoiceNo.trim() || null,
+          receiptHeader: generalDraft.receiptHeader.trim() || null,
+          receiptFooter: generalDraft.receiptFooter.trim() || null,
+          backupPath: generalDraft.backupPath.trim() || null,
+          currency: generalDraft.currency.trim(),
+          taxRate: Number(generalDraft.taxRate ?? 0),
+          loyaltyPointsRate: Number(generalDraft.loyaltyPointsRate ?? 0.01),
+          loyaltyRedeemRate: Number(generalDraft.loyaltyRedeemRate ?? 1),
+          taxIncluded: !!generalDraft.taxIncluded,
+        }),
+      });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      await qc.refetchQueries({ queryKey: ["settings"] });
+      showToast("Store, tax, loyalty, and receipt text settings saved.", "success");
+    } catch (e: any) {
+      const msg = e?.message ?? "Failed to save settings";
+      setSaveErrors((p) => ({ ...p, general: msg }));
+      showToast(msg, "error");
+    } finally {
+      setSaveBusy((p) => ({ ...p, general: false }));
+    }
+  };
+
+  const saveReceiptColors = async () => {
+    setSaveErrors((p) => ({ ...p, colors: null }));
+    setSaveBusy((p) => ({ ...p, colors: true }));
+    try {
+      await api("/settings/receipt-colors", {
+        method: "POST",
+        body: JSON.stringify(receiptColorsDraft),
+      });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      await qc.refetchQueries({ queryKey: ["settings"] });
+      showToast("Receipt colors updated.", "success");
+    } catch (e: any) {
+      const msg = e?.message ?? "Failed to save receipt colors";
+      setSaveErrors((p) => ({ ...p, colors: msg }));
+      showToast(msg, "error");
+    } finally {
+      setSaveBusy((p) => ({ ...p, colors: false }));
+    }
+  };
+
+  const saveSmtpSettings = async () => {
+    setSaveErrors((p) => ({ ...p, smtp: null }));
+    setSaveBusy((p) => ({ ...p, smtp: true }));
+    try {
+      if (!Number.isFinite(Number(smtpDraft.smtpPort)) || Number(smtpDraft.smtpPort) <= 0) {
+        throw new Error("SMTP port must be a positive number.");
+      }
+      await api("/settings/smtp", {
+        method: "POST",
+        body: JSON.stringify({
+          smtpHost: smtpDraft.smtpHost.trim() || null,
+          smtpPort: Number(smtpDraft.smtpPort),
+          smtpUser: smtpDraft.smtpUser.trim() || null,
+          smtpPass: smtpDraft.smtpPass || null,
+          smtpFrom: smtpDraft.smtpFrom.trim() || null,
+        }),
+      });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      await qc.refetchQueries({ queryKey: ["settings"] });
+      showToast("SMTP settings saved.", "success");
+    } catch (e: any) {
+      const msg = e?.message ?? "Failed to save SMTP settings";
+      setSaveErrors((p) => ({ ...p, smtp: msg }));
+      showToast(msg, "error");
+    } finally {
+      setSaveBusy((p) => ({ ...p, smtp: false }));
+    }
+  };
+
+  const saveAtrSettings = async () => {
+    setSaveErrors((p) => ({ ...p, atr: null }));
+    setSaveBusy((p) => ({ ...p, atr: true }));
+    try {
+      await api("/settings/atr", {
+        method: "POST",
+        body: JSON.stringify({
+          atrEnabled: !!atrDraft.atrEnabled,
+          atrDeviceId: atrDraft.atrEnabled ? atrDraft.atrDeviceId.trim() || null : null,
+        }),
+      });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      await qc.refetchQueries({ queryKey: ["settings"] });
+      showToast("ATR settings updated.", "success");
+    } catch (e: any) {
+      const msg = e?.message ?? "Failed to save ATR settings";
+      setSaveErrors((p) => ({ ...p, atr: msg }));
+      showToast(msg, "error");
+    } finally {
+      setSaveBusy((p) => ({ ...p, atr: false }));
+    }
+  };
+
+  const saveCashDrawerSettings = async () => {
+    setSaveErrors((p) => ({ ...p, cashDrawer: null }));
+    setSaveBusy((p) => ({ ...p, cashDrawer: true }));
+    try {
+      await api("/settings/cash-drawer", {
+        method: "POST",
+        body: JSON.stringify({ enabled: !!cashDrawerEnabled }),
+      });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      await qc.refetchQueries({ queryKey: ["settings"] });
+      showToast("Cash drawer setting saved.", "success");
+    } catch (e: any) {
+      const msg = e?.message ?? "Failed to save cash drawer setting";
+      setSaveErrors((p) => ({ ...p, cashDrawer: msg }));
+      showToast(msg, "error");
+    } finally {
+      setSaveBusy((p) => ({ ...p, cashDrawer: false }));
+    }
+  };
+
   const toggleLowStockSound = async () => {
     const next = !lowStockSound;
+    setSaveBusy((p) => ({ ...p, lowStock: true }));
     setLowStockSound(next);
     try {
       await api("/settings", {
         method: "PUT",
         body: JSON.stringify({ lowStockSoundEnabled: next }),
       });
-      qc.invalidateQueries({ queryKey: ["settings"] });
-    } catch {
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      showToast(`Low-stock sound ${next ? "enabled" : "disabled"}.`, "success");
+    } catch (e: any) {
       setLowStockSound(!next);
+      showToast(e?.message ?? "Failed to update low-stock sound setting.", "error");
+    } finally {
+      setSaveBusy((p) => ({ ...p, lowStock: false }));
     }
   };
 
   const toggleEmployeeExpenses = async () => {
     const next = !employeeExpenses;
+    setSaveBusy((p) => ({ ...p, employeeExpenses: true }));
     setEmployeeExpenses(next);
     try {
       await api("/settings/allow-employee-expenses", {
         method: "POST",
         body: JSON.stringify({ enabled: next }),
       });
-      qc.invalidateQueries({ queryKey: ["settings"] });
-    } catch {
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      showToast(`Employee expenses ${next ? "enabled" : "disabled"}.`, "success");
+    } catch (e: any) {
       setEmployeeExpenses(!next);
+      showToast(e?.message ?? "Failed to update employee expense setting.", "error");
+    } finally {
+      setSaveBusy((p) => ({ ...p, employeeExpenses: false }));
     }
   };
 
@@ -7745,6 +8019,7 @@ const AdminPage = ({
   const saveSheetUrl = async () => {
     setSheetErr(null);
     setSheetMsg(null);
+    setSheetSaveBusy(true);
     try {
       if (!sheetUrl.trim()) throw new Error("Enter the Google Sheet link");
       await api("/settings/google-sheet-url", {
@@ -7752,9 +8027,14 @@ const AdminPage = ({
         body: JSON.stringify({ url: sheetUrl.trim() }),
       });
       setSheetMsg("Saved");
-      qc.invalidateQueries({ queryKey: ["settings"] });
+      await qc.invalidateQueries({ queryKey: ["settings"] });
+      await qc.refetchQueries({ queryKey: ["settings"] });
+      showToast("Google Sheet URL saved.", "success");
     } catch (e: any) {
       setSheetErr(e?.message ?? "Failed to save");
+      showToast(e?.message ?? "Failed to save Google Sheet URL.", "error");
+    } finally {
+      setSheetSaveBusy(false);
     }
   };
 
@@ -8090,6 +8370,16 @@ const AdminPage = ({
         )}
       </button>
     </div>
+    <div
+      className={`mb-4 rounded-md border px-3 py-2 text-xs transition-opacity ${
+        hasUnsavedChanges
+          ? "border-amber-500/50 bg-amber-500/10 text-amber-300 opacity-100"
+          : "border-transparent bg-transparent text-transparent opacity-0"
+      }`}
+      aria-live="polite"
+    >
+      You have unsaved configuration changes. Save before leaving this page.
+    </div>
     <div className="grid gap-4 lg:grid-cols-2">
       <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
         <h3 className="text-sm font-semibold text-[var(--fg)]">Sync & Devices</h3>
@@ -8173,11 +8463,12 @@ const AdminPage = ({
           />
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <button
-              className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-1.5 text-xs font-semibold text-[var(--fg)]"
+              className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-1.5 text-xs font-semibold text-[var(--fg)] disabled:opacity-50"
               onClick={saveSheetUrl}
+              disabled={sheetSaveBusy || !sheetUrl.trim() || !sheetUrlChanged}
               type="button"
             >
-              Save URL
+              {sheetSaveBusy ? "Saving..." : sheetUrlChanged ? "Save URL" : "Saved"}
             </button>
             <button
               className="rounded-md bg-teal-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
@@ -8234,6 +8525,109 @@ const AdminPage = ({
           Employees: {sellers.length}. KPI rows: {kpi.length}.
         </p>
       </div>
+      <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm lg:col-span-2">
+        <h3 className="text-sm font-semibold text-[var(--fg)]">Store, Tax, Loyalty & Receipt Text</h3>
+        <p className="mt-1 text-xs text-[var(--muted)]">
+          Edit core business settings with explicit save to prevent accidental resets.
+        </p>
+        <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <TextField
+            label="Business name"
+            value={generalDraft.businessName}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, businessName: v }))}
+          />
+          <TextField
+            label="Currency"
+            value={generalDraft.currency}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, currency: v }))}
+          />
+          <NumberField
+            label="Tax/VAT rate"
+            value={generalDraft.taxRate}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, taxRate: v }))}
+          />
+          <NumberField
+            label="Loyalty points rate"
+            value={generalDraft.loyaltyPointsRate}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, loyaltyPointsRate: v }))}
+          />
+          <NumberField
+            label="Loyalty redeem rate"
+            value={generalDraft.loyaltyRedeemRate}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, loyaltyRedeemRate: v }))}
+          />
+          <TextField
+            label="Backup folder path"
+            value={generalDraft.backupPath}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, backupPath: v }))}
+          />
+          <TextField
+            label="PO Box"
+            value={generalDraft.poBox}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, poBox: v }))}
+          />
+          <TextField
+            label="Town"
+            value={generalDraft.town}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, town: v }))}
+          />
+          <TextField
+            label="Phone"
+            value={generalDraft.telNo}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, telNo: v }))}
+          />
+          <TextField
+            label="KRA PIN"
+            value={generalDraft.kraPin}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, kraPin: v }))}
+          />
+          <TextField
+            label="CU Serial No"
+            value={generalDraft.cuSerialNo}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, cuSerialNo: v }))}
+          />
+          <TextField
+            label="CU Invoice No"
+            value={generalDraft.cuInvoiceNo}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, cuInvoiceNo: v }))}
+          />
+          <TextField
+            label="Receipt header"
+            value={generalDraft.receiptHeader}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, receiptHeader: v }))}
+          />
+          <TextField
+            label="Receipt footer"
+            value={generalDraft.receiptFooter}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, receiptFooter: v }))}
+          />
+          <TextField
+            label="Return policy"
+            value={generalDraft.returnPolicy}
+            onChange={(v) => setGeneralDraft((p) => ({ ...p, returnPolicy: v }))}
+          />
+        </div>
+        <label className="mt-3 inline-flex items-center gap-2 text-xs text-[var(--fg)]">
+          <input
+            type="checkbox"
+            checked={generalDraft.taxIncluded}
+            onChange={(e) => setGeneralDraft((p) => ({ ...p, taxIncluded: e.target.checked }))}
+            className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
+          />
+          Include tax in sale totals
+        </label>
+        {saveErrors.general && <p className="mt-2 text-xs text-red-400">{saveErrors.general}</p>}
+        <div className="mt-3">
+          <button
+            className="rounded-md bg-teal-600 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50"
+            onClick={saveGeneralSettings}
+            disabled={saveBusy.general || !generalChanged}
+            type="button"
+          >
+            {saveBusy.general ? "Saving..." : generalChanged ? "Save store settings" : "Saved"}
+          </button>
+        </div>
+      </div>
       <div className="rounded-2xl border border-[var(--stroke)] bg-[var(--card)] p-4 shadow-sm">
         <h3 className="text-sm font-semibold text-[var(--fg)]">Alerts & Notifications</h3>
         <div className="mt-2 flex flex-wrap items-center gap-4">
@@ -8242,9 +8636,10 @@ const AdminPage = ({
               type="checkbox"
               checked={lowStockSound}
               onChange={toggleLowStockSound}
+              disabled={saveBusy.lowStock}
               className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
             />
-            Low-stock sound alert
+            Low-stock sound alert {saveBusy.lowStock ? "(saving...)" : ""}
           </label>
         </div>
         <p className="mt-2 text-xs text-[var(--muted)]">
@@ -8256,9 +8651,10 @@ const AdminPage = ({
               type="checkbox"
               checked={employeeExpenses}
               onChange={toggleEmployeeExpenses}
+              disabled={saveBusy.employeeExpenses}
               className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
             />
-            Allow employees to enter expenses
+            Allow employees to enter expenses {saveBusy.employeeExpenses ? "(saving...)" : ""}
           </label>
         </div>
         <p className="mt-2 text-xs text-[var(--muted)]">
@@ -8275,35 +8671,36 @@ const AdminPage = ({
         <label className="flex items-center gap-2 text-xs text-[var(--fg)]">
           <input
             type="checkbox"
-            checked={settings.atrEnabled ?? false}
-            onChange={async () => {
-              try {
-                await api("/settings/atr", { method: "POST", body: JSON.stringify({ atrEnabled: !(settings.atrEnabled ?? false) }) });
-                qc.invalidateQueries({ queryKey: ["settings"] });
-              } catch {}
-            }}
+            checked={atrDraft.atrEnabled}
+            onChange={(e) => setAtrDraft((p) => ({ ...p, atrEnabled: e.target.checked }))}
             className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
           />
           ATR enabled
         </label>
       </div>
-      {settings.atrEnabled && (
+      {atrDraft.atrEnabled && (
         <div className="mt-2">
           <label className="text-xs text-[var(--muted)]">ATR Device ID</label>
           <input
             type="text"
-            defaultValue={settings.atrDeviceId ?? ""}
-            onBlur={async (e) => {
-              try {
-                await api("/settings/atr", { method: "POST", body: JSON.stringify({ atrEnabled: true, atrDeviceId: e.target.value }) });
-                qc.invalidateQueries({ queryKey: ["settings"] });
-              } catch {}
-            }}
+            value={atrDraft.atrDeviceId}
+            onChange={(e) => setAtrDraft((p) => ({ ...p, atrDeviceId: e.target.value }))}
             className="mt-1 w-full rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
             placeholder="Enter ATR device ID"
           />
         </div>
       )}
+      {saveErrors.atr && <p className="mt-2 text-xs text-red-400">{saveErrors.atr}</p>}
+      <div className="mt-3">
+        <button
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-1.5 text-xs font-semibold text-[var(--fg)] disabled:opacity-50"
+          onClick={saveAtrSettings}
+          disabled={saveBusy.atr || !atrChanged}
+          type="button"
+        >
+          {saveBusy.atr ? "Saving..." : atrChanged ? "Save ATR settings" : "Saved"}
+        </button>
+      </div>
     </div>
 
     {/* Receipt Color Customization */}
@@ -8314,41 +8711,67 @@ const AdminPage = ({
         <div>
           <label className="text-xs text-[var(--muted)]">Header color</label>
           <div className="mt-1 flex items-center gap-2">
-            <input type="color" defaultValue={settings.receiptPrimaryColor ?? "#0d9488"} onChange={async (e) => {
-              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptPrimaryColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
-            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
-            <span className="text-xs text-[var(--fg)]">{settings.receiptPrimaryColor ?? "#0d9488"}</span>
+            <input
+              type="color"
+              value={receiptColorsDraft.receiptPrimaryColor}
+              onChange={(e) =>
+                setReceiptColorsDraft((p) => ({ ...p, receiptPrimaryColor: e.target.value }))
+              }
+              className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]"
+            />
+            <span className="text-xs text-[var(--fg)]">{receiptColorsDraft.receiptPrimaryColor}</span>
           </div>
         </div>
         <div>
           <label className="text-xs text-[var(--muted)]">Text color</label>
           <div className="mt-1 flex items-center gap-2">
-            <input type="color" defaultValue={settings.receiptSecondaryColor ?? "#1e293b"} onChange={async (e) => {
-              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptSecondaryColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
-            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
-            <span className="text-xs text-[var(--fg)]">{settings.receiptSecondaryColor ?? "#1e293b"}</span>
+            <input
+              type="color"
+              value={receiptColorsDraft.receiptSecondaryColor}
+              onChange={(e) =>
+                setReceiptColorsDraft((p) => ({ ...p, receiptSecondaryColor: e.target.value }))
+              }
+              className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]"
+            />
+            <span className="text-xs text-[var(--fg)]">{receiptColorsDraft.receiptSecondaryColor}</span>
           </div>
         </div>
         <div>
           <label className="text-xs text-[var(--muted)]">Background</label>
           <div className="mt-1 flex items-center gap-2">
-            <input type="color" defaultValue={settings.receiptAccentColor ?? "#f8fafc"} onChange={async (e) => {
-              try { await api("/settings/receipt-colors", { method: "POST", body: JSON.stringify({ receiptAccentColor: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {}
-            }} className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]" />
-            <span className="text-xs text-[var(--fg)]">{settings.receiptAccentColor ?? "#f8fafc"}</span>
+            <input
+              type="color"
+              value={receiptColorsDraft.receiptAccentColor}
+              onChange={(e) =>
+                setReceiptColorsDraft((p) => ({ ...p, receiptAccentColor: e.target.value }))
+              }
+              className="h-8 w-8 rounded cursor-pointer border border-[var(--stroke)]"
+            />
+            <span className="text-xs text-[var(--fg)]">{receiptColorsDraft.receiptAccentColor}</span>
           </div>
         </div>
       </div>
       {/* Receipt Preview */}
-      <div className="mt-4 rounded-lg border border-[var(--stroke)] p-3" style={{ backgroundColor: settings.receiptAccentColor ?? "#f8fafc", maxWidth: 280 }}>
-        <div className="rounded px-2 py-1 text-center text-xs font-bold text-white" style={{ backgroundColor: settings.receiptPrimaryColor ?? "#0d9488" }}>
-          {settings.businessName} – Preview
+      <div className="mt-4 rounded-lg border border-[var(--stroke)] p-3" style={{ backgroundColor: receiptColorsDraft.receiptAccentColor, maxWidth: 280 }}>
+        <div className="rounded px-2 py-1 text-center text-xs font-bold text-white" style={{ backgroundColor: receiptColorsDraft.receiptPrimaryColor }}>
+          {generalDraft.businessName || settings.businessName} – Preview
         </div>
-        <div className="mt-2 text-center" style={{ color: settings.receiptSecondaryColor ?? "#1e293b" }}>
+        <div className="mt-2 text-center" style={{ color: receiptColorsDraft.receiptSecondaryColor }}>
           <p className="text-[10px]">Receipt #1001</p>
-          <p className="text-[10px]">Item 1 — {settings.currency} 500</p>
-          <p className="text-[10px] font-bold mt-1">TOTAL: {settings.currency} 500</p>
+          <p className="text-[10px]">Item 1 — {generalDraft.currency || settings.currency} 500</p>
+          <p className="text-[10px] font-bold mt-1">TOTAL: {generalDraft.currency || settings.currency} 500</p>
         </div>
+      </div>
+      {saveErrors.colors && <p className="mt-2 text-xs text-red-400">{saveErrors.colors}</p>}
+      <div className="mt-3">
+        <button
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-1.5 text-xs font-semibold text-[var(--fg)] disabled:opacity-50"
+          onClick={saveReceiptColors}
+          disabled={saveBusy.colors || !colorsChanged}
+          type="button"
+        >
+          {saveBusy.colors ? "Saving..." : colorsChanged ? "Save receipt colors" : "Saved"}
+        </button>
       </div>
     </div>
 
@@ -8357,11 +8780,51 @@ const AdminPage = ({
       <h3 className="text-sm font-semibold text-[var(--fg)]">Email (SMTP) Configuration</h3>
       <p className="mt-1 text-xs text-[var(--muted)]">Configure SMTP to email receipts to customers.</p>
       <div className="mt-3 grid gap-2 sm:grid-cols-2">
-        <input placeholder="SMTP Host" defaultValue={settings.smtpHost ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpHost: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
-        <input placeholder="SMTP Port" type="number" defaultValue={settings.smtpPort ?? 587} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpPort: Number(e.target.value) }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
-        <input placeholder="SMTP Username" defaultValue={settings.smtpUser ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpUser: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
-        <input placeholder="SMTP Password" type="password" defaultValue={settings.smtpPass ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpPass: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
-        <input placeholder="From Email" defaultValue={settings.smtpFrom ?? ""} onBlur={async (e) => { try { await api("/settings/smtp", { method: "POST", body: JSON.stringify({ smtpFrom: e.target.value }) }); qc.invalidateQueries({ queryKey: ["settings"] }); } catch {} }} className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]" />
+        <input
+          placeholder="SMTP Host"
+          value={smtpDraft.smtpHost}
+          onChange={(e) => setSmtpDraft((p) => ({ ...p, smtpHost: e.target.value }))}
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
+        />
+        <input
+          placeholder="SMTP Port"
+          type="number"
+          value={smtpDraft.smtpPort}
+          onChange={(e) =>
+            setSmtpDraft((p) => ({ ...p, smtpPort: Number(e.target.value || 0) }))
+          }
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
+        />
+        <input
+          placeholder="SMTP Username"
+          value={smtpDraft.smtpUser}
+          onChange={(e) => setSmtpDraft((p) => ({ ...p, smtpUser: e.target.value }))}
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
+        />
+        <input
+          placeholder="SMTP Password"
+          type="password"
+          value={smtpDraft.smtpPass}
+          onChange={(e) => setSmtpDraft((p) => ({ ...p, smtpPass: e.target.value }))}
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
+        />
+        <input
+          placeholder="From Email"
+          value={smtpDraft.smtpFrom}
+          onChange={(e) => setSmtpDraft((p) => ({ ...p, smtpFrom: e.target.value }))}
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-2 text-sm text-[var(--fg)]"
+        />
+      </div>
+      {saveErrors.smtp && <p className="mt-2 text-xs text-red-400">{saveErrors.smtp}</p>}
+      <div className="mt-3">
+        <button
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-1.5 text-xs font-semibold text-[var(--fg)] disabled:opacity-50"
+          onClick={saveSmtpSettings}
+          disabled={saveBusy.smtp || !smtpChanged}
+          type="button"
+        >
+          {saveBusy.smtp ? "Saving..." : smtpChanged ? "Save SMTP settings" : "Saved"}
+        </button>
       </div>
     </div>
 
@@ -8373,17 +8836,23 @@ const AdminPage = ({
         <label className="flex items-center gap-2 text-xs text-[var(--fg)]">
           <input
             type="checkbox"
-            checked={settings.cashDrawerEnabled ?? false}
-            onChange={async () => {
-              try {
-                await api("/settings/cash-drawer", { method: "POST", body: JSON.stringify({ enabled: !(settings.cashDrawerEnabled ?? false) }) });
-                qc.invalidateQueries({ queryKey: ["settings"] });
-              } catch {}
-            }}
+            checked={cashDrawerEnabled}
+            onChange={(e) => setCashDrawerEnabled(e.target.checked)}
             className="h-4 w-4 rounded border-[var(--stroke)] accent-teal-600"
           />
           Enable auto-open cash drawer
         </label>
+      </div>
+      {saveErrors.cashDrawer && <p className="mt-2 text-xs text-red-400">{saveErrors.cashDrawer}</p>}
+      <div className="mt-3">
+        <button
+          className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-1.5 text-xs font-semibold text-[var(--fg)] disabled:opacity-50"
+          onClick={saveCashDrawerSettings}
+          disabled={saveBusy.cashDrawer || !cashDrawerChanged}
+          type="button"
+        >
+          {saveBusy.cashDrawer ? "Saving..." : cashDrawerChanged ? "Save cash drawer setting" : "Saved"}
+        </button>
       </div>
     </div>
 
@@ -8483,8 +8952,9 @@ const AdminPage = ({
       </div>
       {empErr && <p className="mt-2 text-sm text-red-400">{empErr}</p>}
       <button
-        className="mt-3 rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white"
+        className="mt-3 rounded-md bg-teal-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
         onClick={async () => {
+          setEmpBusy(true);
           setEmpErr(null);
           try {
             const name = empForm.name.trim();
@@ -8497,13 +8967,17 @@ const AdminPage = ({
             });
             setEmpForm({ name: "", role: "seller", pin: "", active: true });
             qc.invalidateQueries({ queryKey: ["sellers"] });
+            showToast("Employee added successfully.", "success");
           } catch (e: any) {
             setEmpErr(e?.message ?? "Failed to add employee");
+          } finally {
+            setEmpBusy(false);
           }
         }}
+        disabled={empBusy}
         type="button"
       >
-        Add employee
+        {empBusy ? "Adding employee..." : "Add employee"}
       </button>
       <div className="mt-4 overflow-auto">
         <table className="min-w-full text-left text-sm">
@@ -8537,11 +9011,19 @@ const AdminPage = ({
                   <button
                     className="rounded-md border border-[var(--stroke)] bg-[var(--surface)] px-3 py-1 text-xs text-[var(--fg)]"
                     onClick={async () => {
-                      await api(`/sellers/${s.id}`, {
-                        method: "PUT",
-                        body: JSON.stringify({ active: !s.active }),
-                      });
-                      qc.invalidateQueries({ queryKey: ["sellers"] });
+                      try {
+                        await api(`/sellers/${s.id}`, {
+                          method: "PUT",
+                          body: JSON.stringify({ active: !s.active }),
+                        });
+                        qc.invalidateQueries({ queryKey: ["sellers"] });
+                        showToast(
+                          `${s.name} ${s.active ? "deactivated" : "activated"}.`,
+                          "success"
+                        );
+                      } catch (e: any) {
+                        showToast(e?.message ?? "Failed to update employee status.", "error");
+                      }
                     }}
                     type="button"
                   >

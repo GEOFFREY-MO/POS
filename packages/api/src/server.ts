@@ -291,7 +291,18 @@ const ensureSchema = (db: Db) => {
       updated_at INTEGER NOT NULL
     );`);
     // Initialize tracker records if not exist
-    const types = ["sales", "sale_items", "products", "returns", "inventory_movements", "customers", "daily_accounts", "expenses"];
+    const types = [
+      "sales",
+      "sale_items",
+      "products",
+      "returns",
+      "inventory_movements",
+      "customers",
+      "daily_accounts",
+      "expenses",
+      "loyalty_transactions",
+      "audit_logs",
+    ];
     types.forEach((t) => {
       db.prepare("INSERT OR IGNORE INTO sync_tracker (data_type, record_count, updated_at) VALUES (?, 0, ?)").run(t, now());
     });
@@ -3312,20 +3323,24 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     // Get trackers
     const salesTracker = getTracker("sales");
     const saleItemsTracker = getTracker("sale_items");
-    const productsTracker = getTracker("products");
     const returnsTracker = getTracker("returns");
     const inventoryTracker = getTracker("inventory_movements");
     const customersTracker = getTracker("customers");
     const expensesTracker = getTracker("expenses");
+    const loyaltyTracker = getTracker("loyalty_transactions");
+    const auditTracker = getTracker("audit_logs");
 
     // Fetch only NEW data since last sync
     let sales: any[];
     let saleItems: any[];
+    let serviceSales: any[];
     let products: any[];
     let returnsRows: any[];
     let inventoryMovements: any[];
     let customers: any[];
+    let loyaltyTransactions: any[];
     let expenses: any[];
+    let auditLogs: any[];
 
     if (onlyNew && salesTracker?.last_synced_at) {
       sales = db.prepare("SELECT * FROM sales WHERE created_at > ? ORDER BY created_at ASC LIMIT 500").all(salesTracker.last_synced_at) as any[];
@@ -3337,6 +3352,59 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       saleItems = db.prepare("SELECT si.* FROM sale_items si JOIN sales s ON si.sale_id = s.id WHERE s.created_at > ? ORDER BY s.created_at ASC LIMIT 2000").all(saleItemsTracker.last_synced_at) as any[];
     } else {
       saleItems = db.prepare("SELECT si.* FROM sale_items si JOIN sales s ON si.sale_id = s.id ORDER BY s.created_at ASC").all() as any[];
+    }
+
+    if (onlyNew && saleItemsTracker?.last_synced_at) {
+      serviceSales = db.prepare(`
+        SELECT
+          si.id AS sale_item_id,
+          si.sale_id,
+          s.receipt_no,
+          s.branch_id,
+          s.device_id,
+          s.seller_id,
+          s.seller_name,
+          s.payment_method,
+          s.created_at AS sale_created_at,
+          si.item_id AS service_id,
+          si.name AS service_name,
+          si.quantity,
+          si.final_price AS unit_price,
+          si.extra_value,
+          si.tax_rate,
+          si.tax_amount,
+          (si.final_price * si.quantity) AS line_total
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        WHERE si.kind = 'service' AND s.created_at > ?
+        ORDER BY s.created_at ASC
+        LIMIT 2000
+      `).all(saleItemsTracker.last_synced_at) as any[];
+    } else {
+      serviceSales = db.prepare(`
+        SELECT
+          si.id AS sale_item_id,
+          si.sale_id,
+          s.receipt_no,
+          s.branch_id,
+          s.device_id,
+          s.seller_id,
+          s.seller_name,
+          s.payment_method,
+          s.created_at AS sale_created_at,
+          si.item_id AS service_id,
+          si.name AS service_name,
+          si.quantity,
+          si.final_price AS unit_price,
+          si.extra_value,
+          si.tax_rate,
+          si.tax_amount,
+          (si.final_price * si.quantity) AS line_total
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        WHERE si.kind = 'service'
+        ORDER BY s.created_at ASC
+      `).all() as any[];
     }
 
     // Products - always sync all (for updates)
@@ -3355,9 +3423,47 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     }
 
     if (onlyNew && customersTracker?.last_synced_at) {
-      customers = db.prepare("SELECT id, name, phone, points, created_at FROM customers WHERE created_at > ?").all(customersTracker.last_synced_at) as any[];
+      customers = db.prepare("SELECT id, name, phone, phone2, email, notes, points, created_at, updated_at FROM customers WHERE created_at > ?").all(customersTracker.last_synced_at) as any[];
     } else {
-      customers = db.prepare("SELECT id, name, phone, points, created_at FROM customers").all() as any[];
+      customers = db.prepare("SELECT id, name, phone, phone2, email, notes, points, created_at, updated_at FROM customers").all() as any[];
+    }
+
+    if (onlyNew && loyaltyTracker?.last_synced_at) {
+      loyaltyTransactions = db.prepare(`
+        SELECT
+          lt.id,
+          lt.customer_id,
+          c.name AS customer_name,
+          c.phone AS customer_phone,
+          lt.sale_id,
+          s.receipt_no,
+          lt.points_earned,
+          lt.points_redeemed,
+          lt.created_at
+        FROM loyalty_transactions lt
+        LEFT JOIN customers c ON c.id = lt.customer_id
+        LEFT JOIN sales s ON s.id = lt.sale_id
+        WHERE lt.created_at > ?
+        ORDER BY lt.created_at ASC
+        LIMIT 1000
+      `).all(loyaltyTracker.last_synced_at) as any[];
+    } else {
+      loyaltyTransactions = db.prepare(`
+        SELECT
+          lt.id,
+          lt.customer_id,
+          c.name AS customer_name,
+          c.phone AS customer_phone,
+          lt.sale_id,
+          s.receipt_no,
+          lt.points_earned,
+          lt.points_redeemed,
+          lt.created_at
+        FROM loyalty_transactions lt
+        LEFT JOIN customers c ON c.id = lt.customer_id
+        LEFT JOIN sales s ON s.id = lt.sale_id
+        ORDER BY lt.created_at ASC
+      `).all() as any[];
     }
 
     // Expenses
@@ -3365,6 +3471,40 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       expenses = db.prepare("SELECT * FROM expenses WHERE created_at > ? ORDER BY created_at ASC LIMIT 500").all(expensesTracker.last_synced_at) as any[];
     } else {
       expenses = db.prepare("SELECT * FROM expenses ORDER BY created_at ASC").all() as any[];
+    }
+
+    if (onlyNew && auditTracker?.last_synced_at) {
+      auditLogs = db.prepare(`
+        SELECT
+          al.id,
+          al.user_id,
+          s.name AS user_name,
+          al.action_type,
+          al.target_id,
+          al.target_type,
+          al.details,
+          al.created_at
+        FROM audit_logs al
+        LEFT JOIN sellers s ON s.id = al.user_id
+        WHERE al.created_at > ?
+        ORDER BY al.created_at ASC
+        LIMIT 2000
+      `).all(auditTracker.last_synced_at) as any[];
+    } else {
+      auditLogs = db.prepare(`
+        SELECT
+          al.id,
+          al.user_id,
+          s.name AS user_name,
+          al.action_type,
+          al.target_id,
+          al.target_type,
+          al.details,
+          al.created_at
+        FROM audit_logs al
+        LEFT JOIN sellers s ON s.id = al.user_id
+        ORDER BY al.created_at ASC
+      `).all() as any[];
     }
 
     // Get daily accounts data
@@ -3415,24 +3555,32 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       newRecords: {
         sales: sales.length,
         sale_items: saleItems.length,
+        service_sales: serviceSales.length,
         products: products.length,
         returns: returnsRows.length,
         inventory_movements: inventoryMovements.length,
         customers: customers.length,
+        loyalty_transactions: loyaltyTransactions.length,
         daily_accounts: dailyAccounts.length,
         expenses: expenses.length,
+        audit_logs: auditLogs.length,
+        employees: sellersRows.length,
       },
       sales: sales.map((s) => ({ ...s, payments: s.payments_json ? JSON.parse(s.payments_json) : undefined })),
       sale_items: saleItems,
+      service_sales: serviceSales,
       products,
       returns: returnsRows,
+      employees: sellersRows,
       sellers: sellersRows,
       branches: branchesRows,
       devices: devicesRows,
       inventory_movements: inventoryMovements,
       customers,
+      loyalty_transactions: loyaltyTransactions,
       daily_accounts: dailyAccounts,
       expenses,
+      audit_logs: auditLogs,
     };
   };
 
@@ -3472,6 +3620,14 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       const lastExpense = payload.expenses[payload.expenses.length - 1];
       updateTracker("expenses", lastExpense.id, payload.expenses.length);
     }
+    if (payload.loyalty_transactions?.length > 0) {
+      const lastLoyalty = payload.loyalty_transactions[payload.loyalty_transactions.length - 1];
+      updateTracker("loyalty_transactions", lastLoyalty.id, payload.loyalty_transactions.length);
+    }
+    if (payload.audit_logs?.length > 0) {
+      const lastAudit = payload.audit_logs[payload.audit_logs.length - 1];
+      updateTracker("audit_logs", lastAudit.id, payload.audit_logs.length);
+    }
   };
 
   // Get sync status
@@ -3482,6 +3638,9 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     const totalInventory = (db.prepare("SELECT COUNT(*) as cnt FROM inventory_movements").get() as any)?.cnt ?? 0;
     const totalCustomers = (db.prepare("SELECT COUNT(*) as cnt FROM customers").get() as any)?.cnt ?? 0;
     const totalExpenses = (db.prepare("SELECT COUNT(*) as cnt FROM expenses").get() as any)?.cnt ?? 0;
+    const totalLoyaltyTransactions = (db.prepare("SELECT COUNT(*) as cnt FROM loyalty_transactions").get() as any)?.cnt ?? 0;
+    const totalAuditLogs = (db.prepare("SELECT COUNT(*) as cnt FROM audit_logs").get() as any)?.cnt ?? 0;
+    const totalEmployees = (db.prepare("SELECT COUNT(*) as cnt FROM sellers").get() as any)?.cnt ?? 0;
 
     return {
       trackers,
@@ -3491,6 +3650,9 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
         inventory_movements: totalInventory,
         customers: totalCustomers,
         expenses: totalExpenses,
+        loyalty_transactions: totalLoyaltyTransactions,
+        audit_logs: totalAuditLogs,
+        employees: totalEmployees,
       },
     };
   });
