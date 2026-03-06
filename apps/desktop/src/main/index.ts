@@ -5,7 +5,11 @@ import fs from "node:fs";
 
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 let apiProcess: ChildProcess | null = null;
-const DB_PATH = "C:\\\\ProgramData\\\\Sella\\\\data\\\\sella.db";
+const defaultDbPath =
+  process.platform === "win32"
+    ? path.join(process.env.PROGRAMDATA || "C:\\ProgramData", "Sella", "data", "sella.db")
+    : path.join(app.getPath("userData"), "data", "sella.db");
+const DB_PATH = process.env.DB_PATH || defaultDbPath;
 const logPath = path.join(app.getPath("userData"), "main.log");
 const apiLogPath = path.join(app.getPath("userData"), "api.log");
 const log = (msg: string) => {
