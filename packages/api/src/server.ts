@@ -3584,6 +3584,26 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
     };
   };
 
+  // Google Sheets push payload should only contain tabular datasets.
+  // This prevents Apps Script sheet writers from creating noisy tabs
+  // for scalar metadata fields like syncMode/newRecords.
+  const toSheetsPayload = (payload: any) => ({
+    sales: payload.sales ?? [],
+    sale_items: payload.sale_items ?? [],
+    service_sales: payload.service_sales ?? [],
+    products: payload.products ?? [],
+    returns: payload.returns ?? [],
+    customers: payload.customers ?? [],
+    loyalty_transactions: payload.loyalty_transactions ?? [],
+    expenses: payload.expenses ?? [],
+    inventory_movements: payload.inventory_movements ?? [],
+    employees: payload.employees ?? payload.sellers ?? [],
+    audit_logs: payload.audit_logs ?? [],
+    branches: payload.branches ?? [],
+    devices: payload.devices ?? [],
+    daily_accounts: payload.daily_accounts ?? [],
+  });
+
   // Mark data as synced after successful copy/push
   const markAsSynced = (payload: any) => {
     const ts = now();
@@ -3686,7 +3706,8 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       (db.prepare("SELECT * FROM settings WHERE id = 1").get() as any) ?? null;
     if (!settings?.google_sheet_url) throw badRequest("Google Sheet URL is not set in settings");
 
-    const payload = buildSyncPayload(true); // Only new data
+    const payload = buildSyncPayload(true); // Full internal payload (includes metadata)
+    const sheetsPayload = toSheetsPayload(payload); // Datasets only for sheet writers
     const ts = now();
 
     // Check if there's new data to sync
@@ -3700,14 +3721,14 @@ export const buildServer = (options: BuildServerOptions): FastifyInstance => {
       .prepare(
         "INSERT INTO sync_queue (kind, payload_json, status, error, attempt_count, next_retry_at, created_at, updated_at, last_attempt_at) VALUES (?, ?, 'pending', NULL, 0, NULL, ?, ?, ?)"
       )
-      .run("sheets-push", JSON.stringify(payload), ts, ts, ts);
+      .run("sheets-push", JSON.stringify(sheetsPayload), ts, ts, ts);
 
     // Try to actually push to Google Sheets
     try {
       const response = await fetch(settings.google_sheet_url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(sheetsPayload),
       });
 
       if (response.ok) {

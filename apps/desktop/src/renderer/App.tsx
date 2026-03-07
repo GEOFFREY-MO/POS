@@ -8067,6 +8067,23 @@ const AdminPage = ({
   const [copyBusy, setCopyBusy] = useState(false);
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
 
+  const toSheetReadyPayload = useCallback((data: any) => ({
+    sales: data?.sales ?? [],
+    sale_items: data?.sale_items ?? [],
+    service_sales: data?.service_sales ?? [],
+    products: data?.products ?? [],
+    returns: data?.returns ?? [],
+    customers: data?.customers ?? [],
+    loyalty_transactions: data?.loyalty_transactions ?? [],
+    expenses: data?.expenses ?? [],
+    inventory_movements: data?.inventory_movements ?? [],
+    employees: data?.employees ?? data?.sellers ?? [],
+    audit_logs: data?.audit_logs ?? [],
+    branches: data?.branches ?? [],
+    devices: data?.devices ?? [],
+    daily_accounts: data?.daily_accounts ?? [],
+  }), []);
+
   // Fetch sync status
   const syncStatus = useQuery({
     queryKey: ["sync-status"],
@@ -8085,7 +8102,7 @@ const AdminPage = ({
         setCopyMsg("No new data to copy. All data has been synced.");
         return;
       }
-      const jsonStr = JSON.stringify(data, null, 2);
+      const jsonStr = JSON.stringify(toSheetReadyPayload(data), null, 2);
       await navigator.clipboard.writeText(jsonStr);
       // Mark as synced after copying
       await api("/sync/mark-synced", { method: "POST", body: JSON.stringify({}) });
@@ -8110,7 +8127,7 @@ const AdminPage = ({
     setSheetErr(null);
     try {
       const data = await api<any>("/sync/export-all");
-      const jsonStr = JSON.stringify(data, null, 2);
+      const jsonStr = JSON.stringify(toSheetReadyPayload(data), null, 2);
       await navigator.clipboard.writeText(jsonStr);
       setCopyMsg("ALL data copied (full export). This does NOT mark as synced.");
       showToast("All data copied to clipboard!", "success");
